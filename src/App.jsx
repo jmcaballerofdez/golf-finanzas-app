@@ -10,7 +10,7 @@ import {
   query,
   orderBy,
 } from "firebase/firestore";
-import { onAuthStateChanged, signOut, signInWithEmailAndPassword } from "firebase/auth";
+import { onAuthStateChanged, signOut } from "firebase/auth";
 import {
   LayoutDashboard,
   Receipt,
@@ -38,16 +38,16 @@ import {
 
 const CLUB_ID = "ciudad-real";
 
-/* ---------- Tema "Refined Golf Club" · acento bronce para Finanzas ---------- */
+/* ---------- Tema "Golf B Premium" · acento bronce/dorado para Finanzas ---------- */
 const theme = {
-  bg: "#F7F5F0",
+  bg: "#F8FAF9",
   surface: "#FFFFFF",
-  ink: "#1C2B22",
-  inkSoft: "#5B6A60",
-  border: "#E7E2D8",
-  pine: "#22593D",
-  accent: "#B8863C",
-  accentSoft: "#F3E7D3",
+  ink: "#16241C",
+  inkSoft: "#5C6C62",
+  border: "#E6ECE8",
+  pine: "#1F4F37",
+  accent: "#C6A253",
+  accentSoft: "#F4ECDA",
   success: "#2F7D4F",
   danger: "#B3462C",
   warn: "#C69A3C",
@@ -131,8 +131,14 @@ function Badge({ children, tone = "neutral" }) {
 function Card({ children, style }) {
   return (
     <div
-      className="shadow-md rounded-2xl"
-      style={{ background: theme.surface, padding: 20, ...style }}
+      className="rounded-2xl"
+      style={{
+        background: theme.surface,
+        padding: 20,
+        boxShadow: "0 1px 3px rgba(20,38,28,0.06)",
+        border: `1px solid ${theme.border}`,
+        ...style,
+      }}
     >
       {children}
     </div>
@@ -163,20 +169,21 @@ function Sidebar({ active, setActive, onLogout, userEmail }) {
         minHeight: "100vh",
       }}
     >
-      <div style={{ padding: "0 8px 24px" }}>
+      <div style={{ padding: "0 8px 20px" }}>
         <div
           style={{
             fontFamily: "Playfair Display, serif",
-            fontSize: 20,
+            fontSize: 21,
             fontWeight: 700,
-            color: theme.pine,
+            color: theme.ink,
           }}
         >
           Golf B
         </div>
-        <div style={{ fontSize: 13, color: theme.accent, fontWeight: 600 }}>
+        <div style={{ fontSize: 11, color: theme.accent, fontWeight: 700, marginTop: 2, textTransform: "uppercase", letterSpacing: "0.16em" }}>
           Finanzas
         </div>
+        <div style={{ marginTop: 14, height: 1, background: `linear-gradient(90deg, ${theme.accent}55, transparent)` }} />
       </div>
 
       {items.map(({ id, label, icon: Icon }) => {
@@ -186,20 +193,24 @@ function Sidebar({ active, setActive, onLogout, userEmail }) {
             key={id}
             onClick={() => setActive(id)}
             style={{
+              position: "relative",
               display: "flex",
               alignItems: "center",
               gap: 10,
-              padding: "10px 12px",
+              padding: "10px 12px 10px 16px",
               borderRadius: 10,
               border: "none",
               background: isActive ? theme.accentSoft : "transparent",
-              color: isActive ? theme.accent : theme.inkSoft,
+              color: isActive ? "#8A6A2E" : theme.inkSoft,
               fontWeight: isActive ? 700 : 500,
               fontSize: 14,
               cursor: "pointer",
               textAlign: "left",
             }}
           >
+            {isActive && (
+              <span style={{ position: "absolute", left: 0, top: 6, bottom: 6, width: 3, borderRadius: 999, background: theme.accent }} />
+            )}
             <Icon size={18} />
             {label}
           </button>
@@ -290,31 +301,40 @@ function ResumenView({ transacciones, presupuestos, metas }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16 }}>
-        <Card>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, color: theme.success }}>
-            <TrendingUp size={18} />
-            <span style={{ fontSize: 13, fontWeight: 600 }}>Ingresos del mes</span>
-          </div>
-          <div style={{ fontSize: 28, fontWeight: 700, marginTop: 8, color: theme.ink }}>
-            {fmtEUR(ingresos)}
-          </div>
-        </Card>
-        <Card>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, color: theme.danger }}>
-            <TrendingDown size={18} />
-            <span style={{ fontSize: 13, fontWeight: 600 }}>Gastos del mes</span>
-          </div>
-          <div style={{ fontSize: 28, fontWeight: 700, marginTop: 8, color: theme.ink }}>
-            {fmtEUR(gastos)}
+        <Card style={{ padding: 0, overflow: "hidden" }}>
+          <div style={{ height: 3, background: theme.success }} />
+          <div style={{ padding: 20 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, color: theme.success }}>
+              <TrendingUp size={18} />
+              <span style={{ fontSize: 13, fontWeight: 600 }}>Ingresos del mes</span>
+            </div>
+            <div style={{ fontSize: 28, fontWeight: 700, marginTop: 10, color: theme.ink, fontFamily: "Playfair Display, serif" }}>
+              {fmtEUR(ingresos)}
+            </div>
           </div>
         </Card>
-        <Card>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, color: theme.accent }}>
-            <Wallet size={18} />
-            <span style={{ fontSize: 13, fontWeight: 600 }}>Balance del mes</span>
+        <Card style={{ padding: 0, overflow: "hidden" }}>
+          <div style={{ height: 3, background: theme.danger }} />
+          <div style={{ padding: 20 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, color: theme.danger }}>
+              <TrendingDown size={18} />
+              <span style={{ fontSize: 13, fontWeight: 600 }}>Gastos del mes</span>
+            </div>
+            <div style={{ fontSize: 28, fontWeight: 700, marginTop: 10, color: theme.ink, fontFamily: "Playfair Display, serif" }}>
+              {fmtEUR(gastos)}
+            </div>
           </div>
-          <div style={{ fontSize: 28, fontWeight: 700, marginTop: 8, color: theme.ink }}>
-            {fmtEUR(balance)}
+        </Card>
+        <Card style={{ padding: 0, overflow: "hidden" }}>
+          <div style={{ height: 3, background: theme.accent }} />
+          <div style={{ padding: 20 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, color: theme.accent }}>
+              <Wallet size={18} />
+              <span style={{ fontSize: 13, fontWeight: 600 }}>Balance del mes</span>
+            </div>
+            <div style={{ fontSize: 28, fontWeight: 700, marginTop: 10, color: theme.ink, fontFamily: "Playfair Display, serif" }}>
+              {fmtEUR(balance)}
+            </div>
           </div>
         </Card>
       </div>
@@ -769,111 +789,6 @@ function TareasView({ tareas, onUpdateStatus }) {
 
 /* --------------------------------- App ------------------------------------ */
 
-function LoginForm() {
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
-  const [loading, setLoading] = useState(false);
-
-  const submit = async (e) => {
-    e.preventDefault();
-    setError("");
-    setLoading(true);
-    try {
-      await signInWithEmailAndPassword(auth, email, password);
-    } catch (err) {
-      setError("Email o contraseña incorrectos.");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const inputStyle = {
-    width: "100%",
-    padding: "10px 12px",
-    borderRadius: 8,
-    border: `1px solid ${theme.border}`,
-    fontSize: 14,
-    marginTop: 4,
-  };
-
-  return (
-    <div
-      style={{
-        minHeight: "100vh",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        background: theme.bg,
-      }}
-    >
-      <form
-        onSubmit={submit}
-        className="shadow-md rounded-2xl"
-        style={{ background: theme.surface, padding: 32, width: 340 }}
-      >
-        <div
-          style={{
-            fontFamily: "Playfair Display, serif",
-            fontSize: 22,
-            fontWeight: 700,
-            color: theme.pine,
-            marginBottom: 4,
-          }}
-        >
-          Golf B
-        </div>
-        <div style={{ fontSize: 14, color: theme.accent, fontWeight: 600, marginBottom: 20 }}>
-          Finanzas
-        </div>
-
-        <label style={{ fontSize: 12, fontWeight: 600, color: theme.inkSoft }}>Email</label>
-        <input
-          style={inputStyle}
-          type="email"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          required
-        />
-
-        <label style={{ fontSize: 12, fontWeight: 600, color: theme.inkSoft, marginTop: 12, display: "block" }}>
-          Contraseña
-        </label>
-        <input
-          style={inputStyle}
-          type="password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          required
-        />
-
-        {error && (
-          <div style={{ color: theme.danger, fontSize: 13, marginTop: 10 }}>{error}</div>
-        )}
-
-        <button
-          type="submit"
-          disabled={loading}
-          className="rounded-md"
-          style={{
-            marginTop: 20,
-            width: "100%",
-            padding: "10px 0",
-            background: theme.accent,
-            color: "#fff",
-            border: "none",
-            fontWeight: 700,
-            cursor: "pointer",
-            opacity: loading ? 0.7 : 1,
-          }}
-        >
-          {loading ? "Entrando…" : "Iniciar sesión"}
-        </button>
-      </form>
-    </div>
-  );
-}
-
 function AccessDenied({ onLogout }) {
   return (
     <div
@@ -929,7 +844,7 @@ export default function App() {
       if (u) {
         const { getDoc, doc: docRef } = await import("firebase/firestore");
         try {
-          const snap = await getDoc(docRef(db, "Usuarios", u.uid));
+          const snap = await getDoc(docRef(db, "usuarios", u.uid));
           setRole(snap.exists() ? snap.data().role : null);
         } catch {
           setRole(null);
@@ -987,8 +902,14 @@ export default function App() {
     );
   }
 
-  if (!user || user.isAnonymous) {
-    return <LoginForm />;
+  if (!user) {
+    return (
+      <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: theme.bg }}>
+        <span style={{ color: theme.inkSoft }}>
+          Inicia sesión desde Golf B Máster para acceder a Finanzas.
+        </span>
+      </div>
+    );
   }
 
   if (role !== "superadmin") {
