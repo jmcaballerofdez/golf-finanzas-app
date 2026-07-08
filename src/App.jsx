@@ -877,7 +877,7 @@ export default function App() {
       if (u) {
         const { getDoc, doc: docRef } = await import("firebase/firestore");
         try {
-          const snap = await getDoc(docRef(db, "usuarios", u.uid));
+          const snap = await getDoc(docRef(db, "Usuarios", u.uid));
           setRole(snap.exists() ? snap.data().role : null);
         } catch {
           setRole(null);
