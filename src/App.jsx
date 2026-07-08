@@ -25,6 +25,10 @@ import {
   Circle,
   CheckCircle2,
   Clock,
+  GraduationCap,
+  Wrench,
+  ShoppingCart,
+  Home,
 } from "lucide-react";
 import {
   ResponsiveContainer,
@@ -149,6 +153,14 @@ function Card({ children, style }) {
 
 /* ------------------------------- Sidebar -------------------------------- */
 
+const GOLFB_APPS = [
+  { id: "academia", nombre: "Academia", color: "#B03A2E", url: "https://jmcaballerofdez.github.io/golf-academia-app/", Icon: GraduationCap },
+  { id: "mantenimiento", nombre: "Mantenimiento", color: "#1A5C2A", url: "https://jmcaballerofdez.github.io/golf-mantenimiento-app/", Icon: Wrench },
+  { id: "proshop", nombre: "Proshop", color: "#2E6DA4", url: "https://jmcaballerofdez.github.io/golf-proshop-app/", Icon: ShoppingCart },
+  { id: "finanzas", nombre: "Finanzas", color: "#8E969E", url: "https://jmcaballerofdez.github.io/golf-finanzas-app/", Icon: Wallet },
+  { id: "master", nombre: "Golf B Máster", color: "#C9A227", url: "https://jmcaballerofdez.github.io/golf-master-app/", Icon: Home },
+];
+
 function Sidebar({ active, setActive, onLogout, userEmail }) {
   const items = [
     { id: "resumen", label: "Resumen", icon: LayoutDashboard },
@@ -211,6 +223,34 @@ function Sidebar({ active, setActive, onLogout, userEmail }) {
       })}
 
       <div style={{ marginTop: "auto", paddingTop: 16 }}>
+        <div style={{ padding: "0 8px 14px" }}>
+          <div style={{ fontSize: 10, color: theme.inkSoft, textTransform: "uppercase", fontWeight: 700, letterSpacing: "0.08em", marginBottom: 10, opacity: 0.6 }}>
+            Cambiar de app
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            {GOLFB_APPS.map((app) => {
+              const esActual = app.id === "finanzas";
+              return (
+                <a
+                  key={app.id}
+                  href={esActual ? undefined : app.url}
+                  title={app.nombre}
+                  onClick={(e) => { if (esActual) e.preventDefault(); }}
+                  style={{
+                    width: 30, height: 30, borderRadius: 999, background: app.color,
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    flexShrink: 0, textDecoration: "none",
+                    opacity: esActual ? 1 : 0.6,
+                    boxShadow: esActual ? `0 0 0 2px ${theme.surface}, 0 0 0 4px ${app.color}88` : "none",
+                    cursor: esActual ? "default" : "pointer",
+                  }}
+                >
+                  <app.Icon size={14} color="white" strokeWidth={2} />
+                </a>
+              );
+            })}
+          </div>
+        </div>
         <div
           style={{
             fontSize: 12,
