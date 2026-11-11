@@ -2560,6 +2560,7 @@ function App() {
   const [active, setActive] = useState("resumen");
 
   const [transacciones, setTransacciones] = useState([]);
+  const [ingresosAcademia, setIngresosAcademia] = useState([]);
   const [presupuestos, setPresupuestos] = useState([]);
   const [metas, setMetas] = useState([]);
   const [tareas, setTareas] = useState([]);
@@ -2577,6 +2578,10 @@ function App() {
         query(collection(db, `${base}/finanzas_transacciones`), orderBy("date", "desc")),
         (snap) => setTransacciones(snap.docs.map((d) => ({ ...d.data(), id: d.id })))
       ),
+      // Cobros de cursos y grupos de Academia: lectura en vivo, solo lectura.
+      onSnapshot(doc(db, "academia", "datos"), (snap) =>
+        setIngresosAcademia(snap.exists() ? (snap.data().ingresos || []) : [])
+      , (e) => console.warn("Academia (ingresos):", e)),
       onSnapshot(collection(db, `${base}/finanzas_presupuestos`), (snap) =>
         setPresupuestos(snap.docs.map((d) => ({ ...d.data(), id: d.id })))
       ),
@@ -2599,6 +2604,23 @@ function App() {
 
     return () => unsubs.forEach((u) => u());
   }, [user, role]);
+
+  // Los ingresos de cursos/grupos cobrados en Academia se reflejan aquí solos (no se pueden editar desde Finanzas).
+  const transaccionesAcademia = useMemo(() => ingresosAcademia
+    .filter((i) => i.cobroId || i.categoria === "Cursos y grupos")
+    .map((i) => ({
+      id: "academia-" + i.id,
+      type: "income",
+      category: "Cursos y grupos (Academia)",
+      subcategory: "",
+      description: "🎓 " + (i.concepto || "Cobro de curso"),
+      amount: Number(i.importeTotal ?? i.importeBase ?? 0),
+      date: new Date((i.fecha || "") + "T12:00:00").toISOString(),
+      activity: "Academia", iva_type: i.ivaPct ? String(i.ivaPct) + "%" : "", base_amount: i.importeBase ?? null, irpf_deductible: "no",
+      origen: "academia",
+    }))
+    .filter((t) => t.amount > 0 && !isNaN(new Date(t.date))), [ingresosAcademia]);
+  const todasTransacciones = useMemo(() => [...transacciones, ...transaccionesAcademia], [transacciones, transaccionesAcademia]);
 
   const handleAddTransaccion = async (data) => {
     await addDoc(collection(db, `clubes/${tenantId}/finanzas_transacciones`), {
@@ -2647,7 +2669,7 @@ function App() {
         {active === "mi_agenda" && role === "superadmin" && <MiAgendaVista db={db} F={MI_AGENDA_F} ink={theme.ink} soft={theme.inkSoft} />}
         {active === "resumen" && (
           <ResumenView
-            transacciones={transacciones}
+            transacciones={todasTransacciones}
             presupuestos={presupuestos}
             metas={metas}
             ventasProshop={ventasProshop}
@@ -2656,13 +2678,13 @@ function App() {
           />
         )}
         {active === "transacciones" && (
-          <TransaccionesView transacciones={transacciones} onAdd={handleAddTransaccion} categorias={categorias || CATEGORIAS_DEFECTO} />
+          <TransaccionesView transacciones={todasTransacciones} onAdd={handleAddTransaccion} categorias={categorias || CATEGORIAS_DEFECTO} />
         )}
         {active === "informes" && (
-          <InformesView transacciones={transacciones} ventasProshop={ventasProshop} />
+          <InformesView transacciones={todasTransacciones} ventasProshop={ventasProshop} />
         )}
         {active === "presupuestos" && (
-          <PresupuestosView presupuestos={presupuestos} transacciones={transacciones} />
+          <PresupuestosView presupuestos={presupuestos} transacciones={todasTransacciones} />
         )}
         {active === "metas" && <MetasView metas={metas} />}
         {active === "tareas" && (
