@@ -2717,6 +2717,112 @@ function MisTareasVista({ db, F, ink = "#f3f6f4", soft = "#c9d3cc" }) {
 // clubes/{tenant}/ventas_gcr, con todas las líneas del mes dentro.
 // Se guarda aparte de finanzas_transacciones a propósito: esa colección se
 // carga entera en vivo y con 41.000 filas la app iría lenta.
+// Pestañas: Resumen · Comparativa · Productos · Detalle · Datos (importar).
+
+const VG_DIAS = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"];
+const VG_MESES = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"];
+const VG_MODOS_TIEMPO = ["dia", "semana", "mes", "anio", "diasemana", "mesanio"];
+
+// ---- Fechas (siempre texto aaaa-mm-dd, en UTC para evitar líos de horario) ----
+const vgDate = (s) => new Date(s + "T00:00:00Z");
+const vgIso = (d) => d.toISOString().slice(0, 10);
+const vgAdd = (s, n) => { const d = vgDate(s); d.setUTCDate(d.getUTCDate() + n); return vgIso(d); };
+const vgDiasEntre = (a, b) => Math.round((vgDate(b) - vgDate(a)) / 86400000);
+const vgFinMes = (y, m) => vgIso(new Date(Date.UTC(y, m, 0)));
+const vgAnioAnt = (s) => {
+  const [y, m, d] = s.split("-").map(Number);
+  const maxd = new Date(Date.UTC(y - 1, m, 0)).getUTCDate();
+  return `${y - 1}-${String(m).padStart(2, "0")}-${String(Math.min(d, maxd)).padStart(2, "0")}`;
+};
+const vgDiaSemana = (s) => (vgDate(s).getUTCDay() + 6) % 7; // 0 = lunes
+const vgFmtDia = (s) => (s ? `${s.slice(8, 10)}/${s.slice(5, 7)}/${s.slice(0, 4)}` : "—");
+const vgNorm = (s) => String(s || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+
+// Rangos rápidos. La referencia de "hoy" es la última venta cargada.
+function vgPresets(min, max) {
+  const [y, m] = max.split("-").map(Number);
+  const mm = String(m).padStart(2, "0");
+  const qIni = Math.floor((m - 1) / 3) * 3 + 1;
+  const ant = m === 1 ? [y - 1, 12] : [y, m - 1];
+  return {
+    "7d": ["Últimos 7 días", vgAdd(max, -6), max],
+    "30d": ["Últimos 30 días", vgAdd(max, -29), max],
+    mes: ["Este mes", `${y}-${mm}-01`, max],
+    mesant: ["Mes anterior", `${ant[0]}-${String(ant[1]).padStart(2, "0")}-01`, vgFinMes(ant[0], ant[1])],
+    trim: ["Este trimestre", `${y}-${String(qIni).padStart(2, "0")}-01`, max],
+    anio: ["Este año", `${y}-01-01`, max],
+    anioant: ["Año anterior", `${y - 1}-01-01`, `${y - 1}-12-31`],
+    "12m": ["Últimos 12 meses", vgAdd(vgAnioAnt(max), 1), max],
+    todo: ["Todo el histórico", min, max],
+  };
+}
+
+// ---- Cálculo ----
+function vgFiltrar(flat, f) {
+  const q = vgNorm(f.fProd);
+  return flat.filter(
+    (l) =>
+      (!f.desde || l.d >= f.desde) &&
+      (!f.hasta || l.d <= f.hasta) &&
+      (!f.fFam || l.f === f.fFam) &&
+      (!f.fSub || l.s === f.fSub) &&
+      (!q || vgNorm(l.p).includes(q))
+  );
+}
+
+function vgAgrupar(lines, modo) {
+  const clave = {
+    dia: (l) => l.d,
+    semana: (l) => vgAdd(l.d, -vgDiaSemana(l.d)),
+    mes: (l) => l.d.slice(0, 7),
+    anio: (l) => l.d.slice(0, 4),
+    familia: (l) => l.f,
+    subfamilia: (l) => `${l.f} · ${l.s}`,
+    producto: (l) => l.p,
+    diasemana: (l) => String(vgDiaSemana(l.d)),
+    mesanio: (l) => l.d.slice(5, 7),
+  }[modo];
+  const m = new Map();
+  lines.forEach((l) => {
+    const k = clave(l);
+    let g = m.get(k);
+    if (!g) { g = { clave: k, fam: l.f, c: 0, b: 0, i: 0, t: 0, n: 0 }; m.set(k, g); }
+    g.c += l.c; g.b += l.b; g.i += l.i; g.t += l.t; g.n += 1;
+  });
+  const arr = [...m.values()];
+  if (VG_MODOS_TIEMPO.includes(modo)) arr.sort((a, b) => a.clave.localeCompare(b.clave));
+  else arr.sort((a, b) => b.t - a.t);
+  return arr;
+}
+
+function vgEtq(modo, clave) {
+  if (modo === "dia") return vgFmtDia(clave);
+  if (modo === "semana") return "Sem. " + vgFmtDia(clave);
+  if (modo === "diasemana") return VG_DIAS[Number(clave)];
+  if (modo === "mesanio") return VG_MESES[Number(clave) - 1];
+  return clave;
+}
+
+function vgSumar(lines) {
+  return lines.reduce((s, l) => ({ c: s.c + l.c, b: s.b + l.b, i: s.i + l.i, t: s.t + l.t, n: s.n + 1 }), { c: 0, b: 0, i: 0, t: 0, n: 0 });
+}
+
+function vgComparar(A, B, modo) {
+  const ga = vgAgrupar(A, modo);
+  const gb = vgAgrupar(B, modo);
+  const m = new Map();
+  ga.forEach((g) => m.set(g.clave, { clave: g.clave, a: g.t, b: 0, ua: g.c, ub: 0 }));
+  gb.forEach((g) => {
+    const x = m.get(g.clave) || { clave: g.clave, a: 0, b: 0, ua: 0, ub: 0 };
+    x.b = g.t; x.ub = g.c;
+    m.set(g.clave, x);
+  });
+  const arr = [...m.values()].map((x) => ({ ...x, dif: x.a - x.b, pct: x.b ? ((x.a - x.b) / Math.abs(x.b)) * 100 : null }));
+  if (modo === "mesanio") arr.sort((p, q) => p.clave.localeCompare(q.clave));
+  else arr.sort((p, q) => Math.max(q.a, q.b) - Math.max(p.a, p.b));
+  return arr;
+}
+
 function VentasGCRView({ tenantId }) {
   const [meses, setMeses] = useState(null); // null = aún sin cargar
   const [cargando, setCargando] = useState(false);
@@ -2724,6 +2830,22 @@ function VentasGCRView({ tenantId }) {
   const [paquete, setPaquete] = useState(null); // { nombre, docs }
   const [progreso, setProgreso] = useState(null); // { hechos, total }
   const [resultado, setResultado] = useState("");
+
+  const [tab, setTab] = useState("resumen");
+  const [preset, setPreset] = useState("anio");
+  const [desde, setDesde] = useState("");
+  const [hasta, setHasta] = useState("");
+  const [fFam, setFFam] = useState("");
+  const [fSub, setFSub] = useState("");
+  const [fProd, setFProd] = useState("");
+  const [gran, setGran] = useState("auto");
+  const [agrupar, setAgrupar] = useState("mes");
+  const [orden, setOrden] = useState("t");
+  const [topN, setTopN] = useState(25);
+  const [cmp, setCmp] = useState("anioant");
+  const [cmpModo, setCmpModo] = useState("familia");
+  const [desdeB, setDesdeB] = useState("");
+  const [hastaB, setHastaB] = useState("");
 
   const base = `clubes/${tenantId}/ventas_gcr`;
 
@@ -2801,105 +2923,126 @@ function VentasGCRView({ tenantId }) {
     return Object.entries(r).sort((a, b) => a[0] - b[0]);
   }, [meses]);
 
-  // ------------------------------ Informe con filtros ------------------------------
-  const [desde, setDesde] = useState("");
-  const [hasta, setHasta] = useState("");
-  const [fFam, setFFam] = useState("");
-  const [fSub, setFSub] = useState("");
-  const [fProd, setFProd] = useState("");
-  const [agrupar, setAgrupar] = useState("mes");
-
-  // Al cargar los datos, por defecto se muestra el año en curso del histórico.
-  useEffect(() => {
-    if (meses && meses.length && !desde && !hasta) {
-      const ultimo = meses[meses.length - 1].id;
-      setHasta(ultimo);
-      setDesde(`${ultimo.slice(0, 4)}-01`);
-    }
-  }, [meses]);
-
-  const norm = (s) => String(s || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
-
-  const ids = useMemo(() => (meses || []).map((m) => m.id), [meses]);
+  // ------------------------------ Datos base del informe ------------------------------
   const flat = useMemo(
     () => (meses || []).flatMap((m) => (m.lineas || []).map((l) => ({ ...l, ym: m.id }))),
     [meses]
   );
+  const [minF, maxF] = useMemo(() => {
+    if (!flat.length) return ["", ""];
+    let mn = flat[0].d, mx = flat[0].d;
+    flat.forEach((l) => { if (l.d < mn) mn = l.d; if (l.d > mx) mx = l.d; });
+    return [mn, mx];
+  }, [flat]);
+  const presets = useMemo(() => (minF ? vgPresets(minF, maxF) : null), [minF, maxF]);
+
+  const aplicarPreset = (id) => {
+    if (!presets || !presets[id]) return;
+    setPreset(id);
+    setDesde(presets[id][1]);
+    setHasta(presets[id][2]);
+  };
+  useEffect(() => {
+    if (presets && !desde && !hasta) aplicarPreset("anio");
+  }, [presets]);
+
   const familias = useMemo(() => [...new Set(flat.map((l) => l.f))].sort(), [flat]);
   const subfamilias = useMemo(
     () => [...new Set(flat.filter((l) => !fFam || l.f === fFam).map((l) => l.s))].sort(),
     [flat, fFam]
   );
 
-  const filtradas = useMemo(() => {
-    const q = norm(fProd);
-    return flat.filter(
-      (l) =>
-        (!desde || l.ym >= desde) &&
-        (!hasta || l.ym <= hasta) &&
-        (!fFam || l.f === fFam) &&
-        (!fSub || l.s === fSub) &&
-        (!q || norm(l.p).includes(q))
-    );
-  }, [flat, desde, hasta, fFam, fSub, fProd]);
+  const filtradas = useMemo(() => vgFiltrar(flat, { desde, hasta, fFam, fSub, fProd }), [flat, desde, hasta, fFam, fSub, fProd]);
+  const tot = useMemo(() => vgSumar(filtradas), [filtradas]);
+  const diasPeriodo = desde && hasta && hasta >= desde ? vgDiasEntre(desde, hasta) + 1 : 0;
 
-  const grupos = useMemo(() => {
-    const clave = {
-      mes: (l) => l.ym,
-      anio: (l) => l.ym.slice(0, 4),
-      familia: (l) => l.f,
-      subfamilia: (l) => `${l.f} · ${l.s}`,
-      producto: (l) => l.p,
-    }[agrupar];
-    const m = new Map();
-    filtradas.forEach((l) => {
-      const k = clave(l);
-      const g = m.get(k) || { clave: k, c: 0, b: 0, i: 0, t: 0, n: 0 };
-      g.c += l.c; g.b += l.b; g.i += l.i; g.t += l.t; g.n += 1;
-      m.set(k, g);
-    });
-    const arr = [...m.values()];
-    if (agrupar === "mes" || agrupar === "anio") arr.sort((a, b) => a.clave.localeCompare(b.clave));
-    else arr.sort((a, b) => b.t - a.t);
-    return arr;
-  }, [filtradas, agrupar]);
+  // Evolución (pestaña Resumen)
+  const granEfectiva = gran === "auto" ? (diasPeriodo <= 45 ? "dia" : diasPeriodo <= 200 ? "semana" : diasPeriodo <= 1100 ? "mes" : "anio") : gran;
+  const evolucion = useMemo(() => (tab === "resumen" ? vgAgrupar(filtradas, granEfectiva) : []), [tab, filtradas, granEfectiva]);
+  const porFamilia = useMemo(() => (tab === "resumen" ? vgAgrupar(filtradas, "familia") : []), [tab, filtradas]);
 
-  const totales = useMemo(
-    () => grupos.reduce((s, g) => ({ c: s.c + g.c, b: s.b + g.b, i: s.i + g.i, t: s.t + g.t, n: s.n + g.n }), { c: 0, b: 0, i: 0, t: 0, n: 0 }),
-    [grupos]
-  );
+  // Productos
+  const ranking = useMemo(() => {
+    if (tab !== "productos") return [];
+    const g = vgAgrupar(filtradas, "producto");
+    g.sort((a, b) => (orden === "c" ? b.c - a.c : b.t - a.t));
+    return g;
+  }, [tab, filtradas, orden]);
 
-  const nombreAgrupar = { mes: "Mes", anio: "Año", familia: "Familia", subfamilia: "Subfamilia", producto: "Producto" }[agrupar];
+  // Detalle
+  const grupos = useMemo(() => (tab === "detalle" ? vgAgrupar(filtradas, agrupar) : []), [tab, filtradas, agrupar]);
+
+  // Comparativa
+  const rangoB = useMemo(() => {
+    if (!desde || !hasta) return null;
+    if (cmp === "anioant") return [vgAnioAnt(desde), vgAnioAnt(hasta)];
+    if (cmp === "anterior") {
+      const n = vgDiasEntre(desde, hasta) + 1;
+      const fin = vgAdd(desde, -1);
+      return [vgAdd(fin, -(n - 1)), fin];
+    }
+    return desdeB && hastaB ? [desdeB, hastaB] : null;
+  }, [desde, hasta, cmp, desdeB, hastaB]);
+
+  const comparativa = useMemo(() => {
+    if (tab !== "comparativa" || !rangoB) return null;
+    const A = filtradas;
+    const B = vgFiltrar(flat, { desde: rangoB[0], hasta: rangoB[1], fFam, fSub, fProd });
+    const filas = vgComparar(A, B, cmpModo);
+    const ta = filas.reduce((s, x) => s + x.a, 0);
+    const tb = filas.reduce((s, x) => s + x.b, 0);
+    return { filas, ta, tb, dif: ta - tb, pct: tb ? ((ta - tb) / Math.abs(tb)) * 100 : null };
+  }, [tab, rangoB, filtradas, flat, fFam, fSub, fProd, cmpModo]);
+
+  // ------------------------------ Utilidades de pantalla ------------------------------
   const num = (n) => String(Math.round(n * 100) / 100).replace(".", ",");
+  const pct = (v) => (v == null ? "—" : `${v > 0 ? "+" : ""}${v.toFixed(1).replace(".", ",")} %`);
 
-  const descargarCSV = () => {
-    const filas = [[nombreAgrupar, "Unidades", "Base", "IVA", "Total"].join(";")];
-    grupos.forEach((g) => {
-      filas.push([`"${String(g.clave).replace(/"/g, '""')}"`, num(g.c), num(g.b), num(g.i), num(g.t)].join(";"));
-    });
-    filas.push(["TOTAL", num(totales.c), num(totales.b), num(totales.i), num(totales.t)].join(";"));
-    const blob = new Blob(["﻿" + filas.join("\r\n")], { type: "text/csv;charset=utf-8" });
+  const descargarCSV = (filas, cabecera, nombre) => {
+    const csv = [cabecera.join(";"), ...filas.map((f) => f.map((x, i) => (i === 0 ? `"${String(x).replace(/"/g, '""')}"` : x)).join(";"))];
+    const blob = new Blob(["﻿" + csv.join("\r\n")], { type: "text/csv;charset=utf-8" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = `ventas_gcr_${agrupar}_${desde || "inicio"}_${hasta || "fin"}.csv`;
+    a.download = nombre;
     a.click();
     URL.revokeObjectURL(a.href);
   };
 
   const ctl = { padding: "8px 10px", borderRadius: 8, border: `1px solid ${theme.border}`, fontSize: 14, color: theme.ink, background: "#fff", width: "100%", boxSizing: "border-box" };
   const lbl = { display: "flex", flexDirection: "column", gap: 4, fontSize: 12, color: theme.inkSoft, fontWeight: 600 };
-  const MAX_FILAS = 300;
-
   const th = { textAlign: "left", padding: "8px 12px", fontSize: 12, color: theme.inkSoft, borderBottom: `1px solid ${theme.border}` };
   const td = { padding: "8px 12px", fontSize: 14, color: theme.ink, borderBottom: `1px solid ${theme.border}` };
+  const r = { textAlign: "right" };
+  const MAX_FILAS = 300;
   const boton = (activo) => ({
     padding: "10px 16px", borderRadius: 10, border: "none", fontWeight: 600, fontSize: 14,
     background: activo ? theme.pine : theme.border, color: activo ? "#fff" : theme.inkSoft,
     cursor: activo ? "pointer" : "not-allowed",
   });
+  const chip = (activo) => ({
+    padding: "6px 12px", borderRadius: 999, fontSize: 13, fontWeight: 600, cursor: "pointer",
+    border: `1px solid ${activo ? theme.pine : theme.border}`,
+    background: activo ? theme.pine : "#fff", color: activo ? "#fff" : theme.ink,
+  });
+  const tabBtn = (activo) => ({
+    padding: "10px 16px", background: "none", border: "none", cursor: "pointer", fontSize: 14,
+    fontWeight: activo ? 700 : 500, color: activo ? theme.ink : theme.inkSoft,
+    borderBottom: `3px solid ${activo ? theme.accent : "transparent"}`,
+  });
+
+  const kpis = [
+    ["Total (con IVA)", fmtEUR(tot.t)],
+    ["Base imponible", fmtEUR(tot.b)],
+    ["IVA", fmtEUR(tot.i)],
+    ["Unidades", Math.round(tot.c).toLocaleString("es-ES")],
+    ["Líneas", tot.n.toLocaleString("es-ES")],
+    ["Media diaria", diasPeriodo ? fmtEUR(tot.t / diasPeriodo) : "—"],
+  ];
+
+  const hayDatos = meses && meses.length > 0;
 
   return (
-    <div style={{ maxWidth: 900 }}>
+    <div style={{ maxWidth: 1000 }}>
       <h1 style={{ margin: 0, fontSize: 26, color: theme.ink }}>Ventas Golf Ciudad Real</h1>
       <p style={{ color: theme.inkSoft, marginTop: 6 }}>
         Histórico de ventas del TPV, un documento por mes. Solo lo ves tú (superadmin).
@@ -2911,25 +3054,31 @@ function VentasGCRView({ tenantId }) {
       {resultado && (
         <div style={{ background: "#E7F3EB", color: theme.success, padding: 12, borderRadius: 10, marginBottom: 16, fontSize: 14 }}>{resultado}</div>
       )}
+      {cargando && <div style={{ color: theme.inkSoft, marginBottom: 12 }}>Leyendo el histórico…</div>}
 
-      {meses && meses.length > 0 && (
+      {hayDatos && (
         <>
           <div style={{ background: theme.accentSoft, color: theme.ink, padding: "10px 14px", borderRadius: 10, fontSize: 13, marginBottom: 16 }}>
             Ojo: en este histórico Academia y Proshop están incompletos y Restauración no aparece desde 2024. Los importes llevan IVA incluido en "Total".
           </div>
 
-          <Card style={{ marginBottom: 20 }}>
-            <div style={{ fontWeight: 700, color: theme.ink, marginBottom: 12 }}>Informe de ventas</div>
+          {/* ---------------- Filtros comunes a todas las pestañas ---------------- */}
+          <Card style={{ marginBottom: 16 }}>
+            <div style={{ fontWeight: 700, color: theme.ink, marginBottom: 10 }}>Periodo</div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
+              {presets && Object.entries(presets).map(([id, [nombre]]) => (
+                <button key={id} onClick={() => aplicarPreset(id)} style={chip(preset === id)}>{nombre}</button>
+              ))}
+              <button onClick={() => setPreset("custom")} style={chip(preset === "custom")}>Personalizado</button>
+            </div>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 12 }}>
               <label style={lbl}>Desde
-                <select style={ctl} value={desde} onChange={(e) => setDesde(e.target.value)}>
-                  {ids.map((id) => <option key={id} value={id}>{id}</option>)}
-                </select>
+                <input type="date" style={ctl} value={desde} min={minF} max={maxF}
+                  onChange={(e) => { setDesde(e.target.value); setPreset("custom"); }} />
               </label>
               <label style={lbl}>Hasta
-                <select style={ctl} value={hasta} onChange={(e) => setHasta(e.target.value)}>
-                  {ids.map((id) => <option key={id} value={id}>{id}</option>)}
-                </select>
+                <input type="date" style={ctl} value={hasta} min={minF} max={maxF}
+                  onChange={(e) => { setHasta(e.target.value); setPreset("custom"); }} />
               </label>
               <label style={lbl}>Familia
                 <select style={ctl} value={fFam} onChange={(e) => { setFFam(e.target.value); setFSub(""); }}>
@@ -2946,147 +3095,416 @@ function VentasGCRView({ tenantId }) {
               <label style={lbl}>Producto (contiene)
                 <input style={ctl} value={fProd} onChange={(e) => setFProd(e.target.value)} placeholder="Ej: greenfee, cuota…" />
               </label>
-              <label style={lbl}>Agrupar por
-                <select style={ctl} value={agrupar} onChange={(e) => setAgrupar(e.target.value)}>
-                  <option value="mes">Mes</option>
-                  <option value="anio">Año</option>
-                  <option value="familia">Familia</option>
-                  <option value="subfamilia">Subfamilia</option>
-                  <option value="producto">Producto</option>
-                </select>
-              </label>
             </div>
-
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12, marginTop: 18 }}>
-              {[
-                ["Total (con IVA)", fmtEUR(totales.t)],
-                ["Base imponible", fmtEUR(totales.b)],
-                ["IVA", fmtEUR(totales.i)],
-                ["Unidades", Math.round(totales.c).toLocaleString("es-ES")],
-                ["Líneas", totales.n.toLocaleString("es-ES")],
-              ].map(([t, v]) => (
-                <div key={t} style={{ background: theme.bg, border: `1px solid ${theme.border}`, borderRadius: 10, padding: "10px 12px" }}>
-                  <div style={{ fontSize: 12, color: theme.inkSoft }}>{t}</div>
-                  <div style={{ fontSize: 18, fontWeight: 700, color: theme.ink, marginTop: 2 }}>{v}</div>
-                </div>
-              ))}
-            </div>
-
-            {(agrupar === "mes" || agrupar === "anio") && grupos.length > 0 && (
-              <div style={{ height: 260, marginTop: 20 }}>
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={grupos.map((g) => ({ nombre: g.clave, total: Math.round(g.t * 100) / 100 }))}>
-                    <CartesianGrid strokeDasharray="3 3" stroke={theme.border} />
-                    <XAxis dataKey="nombre" tick={{ fontSize: 11 }} />
-                    <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => `${Math.round(v / 1000)}k`} />
-                    <Tooltip formatter={(v) => fmtEUR(v)} />
-                    <Bar dataKey="total" fill={theme.pine} radius={[4, 4, 0, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            )}
-
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 20, marginBottom: 6 }}>
-              <div style={{ fontSize: 13, color: theme.inkSoft }}>
-                {grupos.length.toLocaleString("es-ES")} {grupos.length === 1 ? "grupo" : "grupos"}
-                {grupos.length > MAX_FILAS ? ` (se muestran los ${MAX_FILAS} primeros; el CSV lleva todos)` : ""}
-              </div>
-              <button onClick={descargarCSV} disabled={grupos.length === 0} style={boton(grupos.length > 0)}>Descargar CSV</button>
-            </div>
-
-            <div style={{ overflowX: "auto" }}>
-              <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                <thead>
-                  <tr>
-                    <th style={th}>{nombreAgrupar}</th>
-                    <th style={{ ...th, textAlign: "right" }}>Unidades</th>
-                    <th style={{ ...th, textAlign: "right" }}>Base</th>
-                    <th style={{ ...th, textAlign: "right" }}>IVA</th>
-                    <th style={{ ...th, textAlign: "right" }}>Total</th>
-                    <th style={{ ...th, textAlign: "right" }}>%</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {grupos.slice(0, MAX_FILAS).map((g) => (
-                    <tr key={g.clave}>
-                      <td style={td}>{g.clave}</td>
-                      <td style={{ ...td, textAlign: "right" }}>{Math.round(g.c).toLocaleString("es-ES")}</td>
-                      <td style={{ ...td, textAlign: "right" }}>{fmtEUR(g.b)}</td>
-                      <td style={{ ...td, textAlign: "right" }}>{fmtEUR(g.i)}</td>
-                      <td style={{ ...td, textAlign: "right", fontWeight: 600 }}>{fmtEUR(g.t)}</td>
-                      <td style={{ ...td, textAlign: "right", color: theme.inkSoft }}>
-                        {totales.t ? `${((g.t / totales.t) * 100).toFixed(1).replace(".", ",")} %` : "—"}
-                      </td>
-                    </tr>
-                  ))}
-                  {grupos.length === 0 && (
-                    <tr><td style={{ ...td, color: theme.inkSoft }} colSpan={6}>No hay ventas con esos filtros.</td></tr>
-                  )}
-                </tbody>
-              </table>
+            <div style={{ marginTop: 10, fontSize: 12, color: theme.inkSoft }}>
+              {desde && hasta && hasta >= desde
+                ? `${vgFmtDia(desde)} – ${vgFmtDia(hasta)} · ${diasPeriodo} días · ${tot.n.toLocaleString("es-ES")} líneas`
+                : "Revisa las fechas: «Hasta» no puede ser anterior a «Desde»."}
+              {` · Datos hasta el ${vgFmtDia(maxF)} (los rangos rápidos se calculan desde esa fecha).`}
             </div>
           </Card>
         </>
       )}
 
-      <details style={{ marginTop: 8 }}>
-        <summary style={{ cursor: "pointer", fontWeight: 600, color: theme.inkSoft, padding: "8px 0", marginBottom: 12 }}>
-          Datos cargados e importación
-        </summary>
-      <Card style={{ marginBottom: 20 }}>
-        <div style={{ fontWeight: 700, color: theme.ink, marginBottom: 12 }}>Lo que hay guardado ahora</div>
-        {cargando && <div style={{ color: theme.inkSoft }}>Leyendo…</div>}
-        {!cargando && meses && meses.length === 0 && (
-          <div style={{ color: theme.inkSoft }}>Todavía no hay ventas importadas.</div>
-        )}
-        {!cargando && meses && meses.length > 0 && (
-          <>
-            <div style={{ color: theme.ink, marginBottom: 12, fontSize: 14 }}>
-              <b>{meses.length}</b> meses · <b>{sumaLineas(meses).toLocaleString("es-ES")}</b> líneas · <b>{fmtEUR(sumaTotal(meses))}</b>
+      {/* ---------------- Pestañas ---------------- */}
+      <div style={{ display: "flex", flexWrap: "wrap", borderBottom: `1px solid ${theme.border}`, marginBottom: 16 }}>
+        {[
+          ["resumen", "Resumen"], ["comparativa", "Comparativa"], ["productos", "Productos"], ["detalle", "Detalle"], ["datos", "Datos"],
+        ].map(([id, nombre]) => (
+          <button key={id} onClick={() => setTab(id)} style={tabBtn(tab === id)}>{nombre}</button>
+        ))}
+      </div>
+
+      {!hayDatos && !cargando && tab !== "datos" && (
+        <Card>
+          <div style={{ color: theme.inkSoft, fontSize: 14 }}>Todavía no hay ventas cargadas. Ve a la pestaña <b>Datos</b> para importar el histórico.</div>
+        </Card>
+      )}
+
+      {/* ---------------- RESUMEN ---------------- */}
+      {hayDatos && tab === "resumen" && (
+        <>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12, marginBottom: 16 }}>
+            {kpis.map(([t, v]) => (
+              <div key={t} style={{ background: theme.surface, border: `1px solid ${theme.border}`, borderRadius: 10, padding: "10px 12px" }}>
+                <div style={{ fontSize: 12, color: theme.inkSoft }}>{t}</div>
+                <div style={{ fontSize: 18, fontWeight: 700, color: theme.ink, marginTop: 2 }}>{v}</div>
+              </div>
+            ))}
+          </div>
+
+          <Card style={{ marginBottom: 16 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, marginBottom: 8 }}>
+              <div style={{ fontWeight: 700, color: theme.ink }}>Evolución de las ventas</div>
+              <label style={{ ...lbl, flexDirection: "row", alignItems: "center", gap: 8 }}>Ver por
+                <select style={{ ...ctl, width: 130 }} value={gran} onChange={(e) => setGran(e.target.value)}>
+                  <option value="auto">Automático</option>
+                  <option value="dia">Día</option>
+                  <option value="semana">Semana</option>
+                  <option value="mes">Mes</option>
+                  <option value="anio">Año</option>
+                </select>
+              </label>
             </div>
+            {evolucion.length > 0 ? (
+              <div style={{ height: 260 }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={evolucion.map((g) => ({ nombre: vgEtq(granEfectiva, g.clave), total: Math.round(g.t * 100) / 100 }))}>
+                    <CartesianGrid strokeDasharray="3 3" stroke={theme.border} />
+                    <XAxis dataKey="nombre" tick={{ fontSize: 11 }} interval="preserveStartEnd" />
+                    <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => (v >= 1000 ? `${Math.round(v / 1000)}k` : v)} />
+                    <Tooltip formatter={(v) => fmtEUR(v)} />
+                    <Bar dataKey="total" fill={theme.pine} radius={[4, 4, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            ) : (
+              <div style={{ color: theme.inkSoft, fontSize: 14 }}>No hay ventas con esos filtros.</div>
+            )}
+          </Card>
+
+          <Card>
+            <div style={{ fontWeight: 700, color: theme.ink, marginBottom: 8 }}>Por familia</div>
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
               <thead>
-                <tr><th style={th}>Año</th><th style={th}>Meses</th><th style={th}>Líneas</th><th style={{ ...th, textAlign: "right" }}>Total</th></tr>
+                <tr>
+                  <th style={th}>Familia</th>
+                  <th style={{ ...th, ...r }}>Unidades</th>
+                  <th style={{ ...th, ...r }}>Total</th>
+                  <th style={{ ...th, ...r }}>%</th>
+                </tr>
               </thead>
               <tbody>
-                {porAnio.map(([anio, v]) => (
-                  <tr key={anio}>
-                    <td style={td}>{anio}</td>
-                    <td style={td}>{v.meses}</td>
-                    <td style={td}>{v.lineas.toLocaleString("es-ES")}</td>
-                    <td style={{ ...td, textAlign: "right" }}>{fmtEUR(v.total)}</td>
+                {porFamilia.map((g) => (
+                  <tr key={g.clave}>
+                    <td style={td}>{g.clave}</td>
+                    <td style={{ ...td, ...r }}>{Math.round(g.c).toLocaleString("es-ES")}</td>
+                    <td style={{ ...td, ...r, fontWeight: 600 }}>{fmtEUR(g.t)}</td>
+                    <td style={{ ...td, ...r, color: theme.inkSoft }}>{tot.t ? `${((g.t / tot.t) * 100).toFixed(1).replace(".", ",")} %` : "—"}</td>
                   </tr>
                 ))}
+                {porFamilia.length === 0 && <tr><td style={{ ...td, color: theme.inkSoft }} colSpan={4}>No hay ventas con esos filtros.</td></tr>}
               </tbody>
             </table>
-          </>
-        )}
-      </Card>
+          </Card>
+        </>
+      )}
 
-      <Card>
-        <div style={{ fontWeight: 700, color: theme.ink, marginBottom: 6 }}>Importar histórico</div>
-        <div style={{ color: theme.inkSoft, fontSize: 13, marginBottom: 14 }}>
-          Elige el archivo <b>ventas_gcr_meses.json</b>. Antes de guardar nada te enseño qué contiene. Si lo repites, se sobrescriben los mismos meses sin duplicar.
-        </div>
-        <input type="file" accept=".json,application/json" onChange={(e) => leerArchivo(e.target.files?.[0])} disabled={!!progreso} />
-
-        {paquete && (
-          <div style={{ marginTop: 16, padding: 12, background: theme.accentSoft, borderRadius: 10, fontSize: 14, color: theme.ink }}>
-            <div><b>{paquete.nombre}</b></div>
-            <div style={{ marginTop: 4 }}>
-              {paquete.docs.length} meses ({paquete.docs[0].id} a {paquete.docs[paquete.docs.length - 1].id}) · {sumaLineas(paquete.docs).toLocaleString("es-ES")} líneas · {fmtEUR(sumaTotal(paquete.docs))}
-            </div>
+      {/* ---------------- COMPARATIVA ---------------- */}
+      {hayDatos && tab === "comparativa" && (
+        <Card>
+          <div style={{ fontWeight: 700, color: theme.ink, marginBottom: 10 }}>Comparar el periodo elegido arriba con otro</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 12 }}>
+            <label style={lbl}>Comparar con
+              <select style={ctl} value={cmp} onChange={(e) => setCmp(e.target.value)}>
+                <option value="anioant">Mismo periodo del año anterior</option>
+                <option value="anterior">Periodo anterior de igual duración</option>
+                <option value="custom">Periodo personalizado</option>
+              </select>
+            </label>
+            {cmp === "custom" && (
+              <>
+                <label style={lbl}>Desde (comparación)
+                  <input type="date" style={ctl} value={desdeB} min={minF} max={maxF} onChange={(e) => setDesdeB(e.target.value)} />
+                </label>
+                <label style={lbl}>Hasta (comparación)
+                  <input type="date" style={ctl} value={hastaB} min={minF} max={maxF} onChange={(e) => setHastaB(e.target.value)} />
+                </label>
+              </>
+            )}
+            <label style={lbl}>Desglosar por
+              <select style={ctl} value={cmpModo} onChange={(e) => setCmpModo(e.target.value)}>
+                <option value="familia">Familia</option>
+                <option value="subfamilia">Subfamilia</option>
+                <option value="producto">Producto</option>
+                <option value="mesanio">Mes del año</option>
+              </select>
+            </label>
           </div>
-        )}
 
-        <div style={{ marginTop: 16, display: "flex", alignItems: "center", gap: 12 }}>
-          <button onClick={importar} disabled={!paquete || !!progreso} style={boton(!!paquete && !progreso)}>
-            {progreso ? "Importando…" : paquete ? `Importar ${paquete.docs.length} meses` : "Importar"}
-          </button>
-          {progreso && <span style={{ fontSize: 14, color: theme.inkSoft }}>{progreso.hechos} de {progreso.total} meses</span>}
-        </div>
-      </Card>
-      </details>
+          {!rangoB && <div style={{ marginTop: 14, color: theme.inkSoft, fontSize: 14 }}>Elige las fechas del periodo de comparación.</div>}
+
+          {comparativa && (
+            <>
+              <div style={{ marginTop: 14, fontSize: 13, color: theme.inkSoft }}>
+                <b style={{ color: theme.pine }}>A</b> = {vgFmtDia(desde)} – {vgFmtDia(hasta)} · <b style={{ color: theme.accent }}>B</b> = {vgFmtDia(rangoB[0])} – {vgFmtDia(rangoB[1])}
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12, marginTop: 12 }}>
+                {[["Periodo A", fmtEUR(comparativa.ta)], ["Periodo B", fmtEUR(comparativa.tb)], ["Diferencia", fmtEUR(comparativa.dif)], ["Variación", pct(comparativa.pct)]].map(([t, v]) => (
+                  <div key={t} style={{ background: theme.bg, border: `1px solid ${theme.border}`, borderRadius: 10, padding: "10px 12px" }}>
+                    <div style={{ fontSize: 12, color: theme.inkSoft }}>{t}</div>
+                    <div style={{ fontSize: 18, fontWeight: 700, color: theme.ink, marginTop: 2 }}>{v}</div>
+                  </div>
+                ))}
+              </div>
+
+              {comparativa.filas.length > 0 && (
+                <div style={{ height: 280, marginTop: 18 }}>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={comparativa.filas.slice(0, 12).map((x) => ({ nombre: vgEtq(cmpModo, x.clave), A: Math.round(x.a * 100) / 100, B: Math.round(x.b * 100) / 100 }))}>
+                      <CartesianGrid strokeDasharray="3 3" stroke={theme.border} />
+                      <XAxis dataKey="nombre" tick={{ fontSize: 11 }} interval={0} />
+                      <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => (v >= 1000 ? `${Math.round(v / 1000)}k` : v)} />
+                      <Tooltip formatter={(v) => fmtEUR(v)} />
+                      <Bar dataKey="A" fill={theme.pine} radius={[4, 4, 0, 0]} />
+                      <Bar dataKey="B" fill={theme.accent} radius={[4, 4, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 16, marginBottom: 6 }}>
+                <div style={{ fontSize: 13, color: theme.inkSoft }}>
+                  {comparativa.filas.length.toLocaleString("es-ES")} filas{comparativa.filas.length > MAX_FILAS ? ` (se muestran ${MAX_FILAS}; el CSV lleva todas)` : ""}
+                  {cmpModo !== "mesanio" && comparativa.filas.length > 12 ? " · el gráfico muestra las 12 mayores" : ""}
+                </div>
+                <button
+                  style={boton(comparativa.filas.length > 0)}
+                  disabled={comparativa.filas.length === 0}
+                  onClick={() =>
+                    descargarCSV(
+                      [...comparativa.filas.map((x) => [vgEtq(cmpModo, x.clave), num(x.a), num(x.b), num(x.dif), x.pct == null ? "" : num(x.pct)]),
+                        ["TOTAL", num(comparativa.ta), num(comparativa.tb), num(comparativa.dif), comparativa.pct == null ? "" : num(comparativa.pct)]],
+                      ["Concepto", "Periodo A", "Periodo B", "Diferencia", "Variacion %"],
+                      `ventas_gcr_comparativa_${cmpModo}_${desde}_${hasta}.csv`
+                    )
+                  }
+                >Descargar CSV</button>
+              </div>
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                  <thead>
+                    <tr>
+                      <th style={th}>{{ familia: "Familia", subfamilia: "Subfamilia", producto: "Producto", mesanio: "Mes" }[cmpModo]}</th>
+                      <th style={{ ...th, ...r }}>Periodo A</th>
+                      <th style={{ ...th, ...r }}>Periodo B</th>
+                      <th style={{ ...th, ...r }}>Diferencia</th>
+                      <th style={{ ...th, ...r }}>Variación</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {comparativa.filas.slice(0, MAX_FILAS).map((x) => (
+                      <tr key={x.clave}>
+                        <td style={td}>{vgEtq(cmpModo, x.clave)}</td>
+                        <td style={{ ...td, ...r }}>{fmtEUR(x.a)}</td>
+                        <td style={{ ...td, ...r }}>{fmtEUR(x.b)}</td>
+                        <td style={{ ...td, ...r, fontWeight: 600, color: x.dif > 0 ? theme.success : x.dif < 0 ? theme.danger : theme.ink }}>{fmtEUR(x.dif)}</td>
+                        <td style={{ ...td, ...r, color: x.dif > 0 ? theme.success : x.dif < 0 ? theme.danger : theme.inkSoft }}>{pct(x.pct)}</td>
+                      </tr>
+                    ))}
+                    {comparativa.filas.length === 0 && <tr><td style={{ ...td, color: theme.inkSoft }} colSpan={5}>No hay ventas en ninguno de los dos periodos con esos filtros.</td></tr>}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+        </Card>
+      )}
+
+      {/* ---------------- PRODUCTOS ---------------- */}
+      {hayDatos && tab === "productos" && (
+        <Card>
+          <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 12 }}>
+            <div style={{ fontWeight: 700, color: theme.ink, flex: 1, minWidth: 200 }}>Ranking de productos</div>
+            <label style={{ ...lbl, width: 170 }}>Ordenar por
+              <select style={ctl} value={orden} onChange={(e) => setOrden(e.target.value)}>
+                <option value="t">Importe</option>
+                <option value="c">Unidades</option>
+              </select>
+            </label>
+            <label style={{ ...lbl, width: 130 }}>Mostrar
+              <select style={ctl} value={topN} onChange={(e) => setTopN(Number(e.target.value))}>
+                <option value={10}>Top 10</option>
+                <option value={25}>Top 25</option>
+                <option value={50}>Top 50</option>
+                <option value={100}>Top 100</option>
+              </select>
+            </label>
+          </div>
+
+          {ranking.length > 0 && (
+            <div style={{ height: Math.min(ranking.length, 10) * 34 + 30 }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart layout="vertical" data={ranking.slice(0, 10).map((g) => ({ nombre: g.clave.length > 34 ? g.clave.slice(0, 33) + "…" : g.clave, valor: Math.round((orden === "c" ? g.c : g.t) * 100) / 100 }))} margin={{ left: 10 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke={theme.border} />
+                  <XAxis type="number" tick={{ fontSize: 11 }} />
+                  <YAxis type="category" dataKey="nombre" width={230} tick={{ fontSize: 11 }} interval={0} />
+                  <Tooltip formatter={(v) => (orden === "c" ? `${v} uds.` : fmtEUR(v))} />
+                  <Bar dataKey="valor" fill={theme.pine} radius={[0, 4, 4, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 16, marginBottom: 6 }}>
+            <div style={{ fontSize: 13, color: theme.inkSoft }}>{ranking.length.toLocaleString("es-ES")} productos distintos en el periodo · el CSV lleva todos</div>
+            <button
+              style={boton(ranking.length > 0)}
+              disabled={ranking.length === 0}
+              onClick={() =>
+                descargarCSV(
+                  ranking.map((g) => [g.clave, g.fam, num(g.c), num(g.b), num(g.i), num(g.t)]),
+                  ["Producto", "Familia", "Unidades", "Base", "IVA", "Total"],
+                  `ventas_gcr_productos_${desde}_${hasta}.csv`
+                )
+              }
+            >Descargar CSV</button>
+          </div>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead>
+                <tr>
+                  <th style={th}>#</th>
+                  <th style={th}>Producto</th>
+                  <th style={th}>Familia</th>
+                  <th style={{ ...th, ...r }}>Unidades</th>
+                  <th style={{ ...th, ...r }}>Total</th>
+                  <th style={{ ...th, ...r }}>%</th>
+                </tr>
+              </thead>
+              <tbody>
+                {ranking.slice(0, topN).map((g, i) => (
+                  <tr key={g.clave}>
+                    <td style={{ ...td, color: theme.inkSoft }}>{i + 1}</td>
+                    <td style={td}>{g.clave}</td>
+                    <td style={{ ...td, color: theme.inkSoft, fontSize: 12 }}>{g.fam}</td>
+                    <td style={{ ...td, ...r }}>{Math.round(g.c).toLocaleString("es-ES")}</td>
+                    <td style={{ ...td, ...r, fontWeight: 600 }}>{fmtEUR(g.t)}</td>
+                    <td style={{ ...td, ...r, color: theme.inkSoft }}>{tot.t ? `${((g.t / tot.t) * 100).toFixed(1).replace(".", ",")} %` : "—"}</td>
+                  </tr>
+                ))}
+                {ranking.length === 0 && <tr><td style={{ ...td, color: theme.inkSoft }} colSpan={6}>No hay ventas con esos filtros.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+
+      {/* ---------------- DETALLE ---------------- */}
+      {hayDatos && tab === "detalle" && (
+        <Card>
+          <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 12 }}>
+            <div style={{ fontWeight: 700, color: theme.ink, flex: 1, minWidth: 200 }}>Detalle agrupado</div>
+            <label style={{ ...lbl, width: 220 }}>Agrupar por
+              <select style={ctl} value={agrupar} onChange={(e) => setAgrupar(e.target.value)}>
+                <option value="dia">Día</option>
+                <option value="semana">Semana</option>
+                <option value="mes">Mes</option>
+                <option value="anio">Año</option>
+                <option value="diasemana">Día de la semana</option>
+                <option value="mesanio">Mes del año (todos los años)</option>
+                <option value="familia">Familia</option>
+                <option value="subfamilia">Subfamilia</option>
+                <option value="producto">Producto</option>
+              </select>
+            </label>
+          </div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+            <div style={{ fontSize: 13, color: theme.inkSoft }}>
+              {grupos.length.toLocaleString("es-ES")} {grupos.length === 1 ? "grupo" : "grupos"}
+              {grupos.length > MAX_FILAS ? ` (se muestran los ${MAX_FILAS} primeros; el CSV lleva todos)` : ""}
+            </div>
+            <button
+              style={boton(grupos.length > 0)}
+              disabled={grupos.length === 0}
+              onClick={() =>
+                descargarCSV(
+                  [...grupos.map((g) => [vgEtq(agrupar, g.clave), num(g.c), num(g.b), num(g.i), num(g.t)]),
+                    ["TOTAL", num(tot.c), num(tot.b), num(tot.i), num(tot.t)]],
+                  [{ dia: "Dia", semana: "Semana", mes: "Mes", anio: "Año", diasemana: "Dia de la semana", mesanio: "Mes del año", familia: "Familia", subfamilia: "Subfamilia", producto: "Producto" }[agrupar], "Unidades", "Base", "IVA", "Total"],
+                  `ventas_gcr_${agrupar}_${desde}_${hasta}.csv`
+                )
+              }
+            >Descargar CSV</button>
+          </div>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead>
+                <tr>
+                  <th style={th}>Grupo</th>
+                  <th style={{ ...th, ...r }}>Unidades</th>
+                  <th style={{ ...th, ...r }}>Base</th>
+                  <th style={{ ...th, ...r }}>IVA</th>
+                  <th style={{ ...th, ...r }}>Total</th>
+                  <th style={{ ...th, ...r }}>%</th>
+                </tr>
+              </thead>
+              <tbody>
+                {grupos.slice(0, MAX_FILAS).map((g) => (
+                  <tr key={g.clave}>
+                    <td style={td}>{vgEtq(agrupar, g.clave)}</td>
+                    <td style={{ ...td, ...r }}>{Math.round(g.c).toLocaleString("es-ES")}</td>
+                    <td style={{ ...td, ...r }}>{fmtEUR(g.b)}</td>
+                    <td style={{ ...td, ...r }}>{fmtEUR(g.i)}</td>
+                    <td style={{ ...td, ...r, fontWeight: 600 }}>{fmtEUR(g.t)}</td>
+                    <td style={{ ...td, ...r, color: theme.inkSoft }}>{tot.t ? `${((g.t / tot.t) * 100).toFixed(1).replace(".", ",")} %` : "—"}</td>
+                  </tr>
+                ))}
+                {grupos.length === 0 && <tr><td style={{ ...td, color: theme.inkSoft }} colSpan={6}>No hay ventas con esos filtros.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+
+      {/* ---------------- DATOS (importar) ---------------- */}
+      {tab === "datos" && (
+        <>
+          <Card style={{ marginBottom: 20 }}>
+            <div style={{ fontWeight: 700, color: theme.ink, marginBottom: 12 }}>Lo que hay guardado ahora</div>
+            {cargando && <div style={{ color: theme.inkSoft }}>Leyendo…</div>}
+            {!cargando && meses && meses.length === 0 && (
+              <div style={{ color: theme.inkSoft }}>Todavía no hay ventas importadas.</div>
+            )}
+            {!cargando && meses && meses.length > 0 && (
+              <>
+                <div style={{ color: theme.ink, marginBottom: 12, fontSize: 14 }}>
+                  <b>{meses.length}</b> meses · <b>{sumaLineas(meses).toLocaleString("es-ES")}</b> líneas · <b>{fmtEUR(sumaTotal(meses))}</b>
+                </div>
+                <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                  <thead>
+                    <tr><th style={th}>Año</th><th style={th}>Meses</th><th style={th}>Líneas</th><th style={{ ...th, ...r }}>Total</th></tr>
+                  </thead>
+                  <tbody>
+                    {porAnio.map(([anio, v]) => (
+                      <tr key={anio}>
+                        <td style={td}>{anio}</td>
+                        <td style={td}>{v.meses}</td>
+                        <td style={td}>{v.lineas.toLocaleString("es-ES")}</td>
+                        <td style={{ ...td, ...r }}>{fmtEUR(v.total)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </>
+            )}
+          </Card>
+
+          <Card>
+            <div style={{ fontWeight: 700, color: theme.ink, marginBottom: 6 }}>Importar histórico</div>
+            <div style={{ color: theme.inkSoft, fontSize: 13, marginBottom: 14 }}>
+              Elige el archivo <b>ventas_gcr_meses.json</b>. Antes de guardar nada te enseño qué contiene. Si lo repites, se sobrescriben los mismos meses sin duplicar.
+            </div>
+            <input type="file" accept=".json,application/json" onChange={(e) => leerArchivo(e.target.files?.[0])} disabled={!!progreso} />
+
+            {paquete && (
+              <div style={{ marginTop: 16, padding: 12, background: theme.accentSoft, borderRadius: 10, fontSize: 14, color: theme.ink }}>
+                <div><b>{paquete.nombre}</b></div>
+                <div style={{ marginTop: 4 }}>
+                  {paquete.docs.length} meses ({paquete.docs[0].id} a {paquete.docs[paquete.docs.length - 1].id}) · {sumaLineas(paquete.docs).toLocaleString("es-ES")} líneas · {fmtEUR(sumaTotal(paquete.docs))}
+                </div>
+              </div>
+            )}
+
+            <div style={{ marginTop: 16, display: "flex", alignItems: "center", gap: 12 }}>
+              <button onClick={importar} disabled={!paquete || !!progreso} style={boton(!!paquete && !progreso)}>
+                {progreso ? "Importando…" : paquete ? `Importar ${paquete.docs.length} meses` : "Importar"}
+              </button>
+              {progreso && <span style={{ fontSize: 14, color: theme.inkSoft }}>{progreso.hechos} de {progreso.total} meses</span>}
+            </div>
+          </Card>
+        </>
+      )}
     </div>
   );
 }
