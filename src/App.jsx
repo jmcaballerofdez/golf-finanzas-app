@@ -968,6 +968,10 @@ function EscanearTicketModal({ onClose, onDetectado, tenantId }) {
         amount: data?.importeTotal != null ? String(data.importeTotal) : "",
         date: data?.fecha || hoy(),
         description: (data?.descripcion || data?.proveedor || "").slice(0, 60),
+        tipo: data?.tipo === "ingreso" ? "income" : "expense",
+        categoriaSugerida: data?.categoriaSugerida || "",
+        ivaPct: data?.ivaPct != null ? String(data.ivaPct) : "",
+        base: data?.importeBase != null ? String(data.importeBase) : "",
         ...guardado,
       });
     } catch (e) {
@@ -1312,16 +1316,24 @@ function ImportarExcelModal({ onClose, onAdd, categorias }) {
 }
 
 function TransaccionForm({ onClose, onSave, initial, categorias, entidadInicial }) {
+  // Categoría sugerida por la IA: se usa la existente que coincida (sin tildes ni mayúsculas); si no hay, la propia sugerencia.
+  const tipoInicial = initial?.tipo === "income" ? "income" : "expense";
+  const categoriaInicial = (() => {
+    const sug = initial?.categoriaSugerida;
+    if (!sug) return "";
+    const lista = (tipoInicial === "income" ? categorias?.ingresos : categorias?.gastos) || [];
+    return lista.find((c) => normTx(c) === normTx(sug)) || sug;
+  })();
   const [form, setForm] = useState({
-    type: "expense",
-    category: "",
+    type: tipoInicial,
+    category: categoriaInicial,
     subcategory: "",
     description: initial?.description || "",
     amount: initial?.amount || "",
     date: initial?.date || new Date().toISOString().slice(0, 10),
     activity: "",
-    iva_type: "",
-    base_amount: "",
+    iva_type: initial?.ivaPct || "",
+    base_amount: initial?.base || (initial?.ivaPct && initial?.amount ? (Number(initial.amount) / (1 + Number(initial.ivaPct) / 100)).toFixed(2) : ""),
     irpf_deductible: "no",
     entidad: initial?.entidad || entidadInicial || "club",
   });
