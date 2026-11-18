@@ -288,7 +288,7 @@ function Sidebar({ active, setActive, onLogout, userEmail, esSuper }) {
     { id: "resumen", label: "Resumen", icon: LayoutDashboard },
     { id: "transacciones", label: "Transacciones", icon: Receipt },
     { id: "informes", label: "Informes", icon: FileText },
-    { id: "ventas_gcr", label: "Ventas GCR", icon: ShoppingCart },
+    { id: "ventas_gcr", label: "Ventas", icon: ShoppingCart },
     { id: "presupuestos", label: "Presupuestos", icon: Wallet },
     { id: "metas", label: "Metas", icon: Target },
     { id: "tareas", label: "Tareas", icon: CheckSquare },
@@ -2722,6 +2722,11 @@ function MisTareasVista({ db, F, ink = "#f3f6f4", soft = "#c9d3cc" }) {
 const VG_DIAS = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"];
 const VG_MESES = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"];
 const VG_MODOS_TIEMPO = ["dia", "semana", "mes", "anio", "diasemana", "mesanio"];
+// Dos entidades, cada una en su propia colección (solo superadmin). "Ambas" es solo una vista combinada.
+const VG_ENTS = {
+  gcr: { col: "ventas_gcr", clave: "GCR", nombre: "Golf Ciudad Real" },
+  jmcf: { col: "ventas_jmcf", clave: "JMCF", nombre: "JMCF · Pro Shop y Academia" },
+};
 
 // ---- Fechas (siempre texto aaaa-mm-dd, en UTC para evitar líos de horario) ----
 const vgDate = (s) => new Date(s + "T00:00:00Z");
@@ -2823,11 +2828,116 @@ function vgComparar(A, B, modo) {
   return arr;
 }
 
+// ---- Importación incremental del Excel del TPV ----
+const vgR2 = (x) => Math.round(x * 100) / 100;
+
+const vgEuro = (v) => {
+  if (typeof v === "number") return v;
+  const n = Number(String(v ?? "").replace(/€/g, "").replace(/\s/g, "").replace(/\./g, "").replace(",", "."));
+  return Number.isFinite(n) ? n : NaN;
+};
+
+const vgFechaTPV = (v) => {
+  try {
+    if (v instanceof Date) {
+      const x = new Date(v.getTime() + 12 * 3600 * 1000); // evita saltos de día por zona horaria
+      return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")}`;
+    }
+    const m = String(v || "").trim().match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/);
+    if (!m) return null;
+    const d = `${m[3]}-${m[2].padStart(2, "0")}-${m[1].padStart(2, "0")}`;
+    return vgIso(vgDate(d)) === d ? d : null; // descarta fechas imposibles (31-02…)
+  } catch (e) {
+    return null;
+  }
+};
+
+// Lee el Excel del TPV (Fecha, Familia, Subfamilia, Producto, Cantidad, Base, IVA, Total).
+async function vgParsearTPV(file) {
+  const XLSX = await import("xlsx");
+  const wb = XLSX.read(await file.arrayBuffer(), { type: "array", cellDates: true });
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const crudas = XLSX.utils.sheet_to_json(ws, { defval: "", raw: true });
+  if (!crudas.length) throw new Error("el archivo está vacío");
+  const K = {};
+  Object.keys(crudas[0]).forEach((k) => { K[vgNorm(k).trim()] = k; });
+  const faltan = ["fecha", "familia", "subfamilia", "producto", "cantidad", "base", "iva", "total"].filter((c) => !(c in K));
+  if (faltan.length) throw new Error("faltan columnas: " + faltan.join(", "));
+  const filas = [];
+  const errores = [];
+  let ignoradas = 0;
+  let descuadres = 0;
+  crudas.forEach((r, i) => {
+    const d = vgFechaTPV(r[K.fecha]);
+    if (!d) { ignoradas += 1; return; } // fila de totales, vacías, etc.
+    const b = vgEuro(r[K.base]), iv = vgEuro(r[K.iva]), t = vgEuro(r[K.total]), c = Number(r[K.cantidad]);
+    if (![b, iv, t, c].every(Number.isFinite)) { errores.push(i + 2); return; }
+    if (Math.abs(b + iv - t) > 0.02) descuadres += 1;
+    filas.push({ d, f: String(r[K.familia]).trim(), s: String(r[K.subfamilia]).trim(), p: String(r[K.producto]).trim(), c: vgR2(c), b: vgR2(b), i: vgR2(iv), t: vgR2(t) });
+  });
+  return { filas, ignoradas, errores, descuadres };
+}
+
+function vgDocMes(id, lineas) {
+  const porFamilia = {};
+  lineas.forEach((l) => {
+    const x = porFamilia[l.f] || (porFamilia[l.f] = { total: 0, base: 0, iva: 0, cantidad: 0, lineas: 0 });
+    x.total += l.t; x.base += l.b; x.iva += l.i; x.cantidad += l.c; x.lineas += 1;
+  });
+  Object.values(porFamilia).forEach((x) => { x.total = vgR2(x.total); x.base = vgR2(x.base); x.iva = vgR2(x.iva); x.cantidad = vgR2(x.cantidad); });
+  return { id, anio: Number(id.slice(0, 4)), mes: Number(id.slice(5, 7)), nLineas: lineas.length, total: vgR2(lineas.reduce((s, l) => s + l.t, 0)), porFamilia, lineas };
+}
+
+// Reglas: solo se sustituye lo que está entre la primera y la última fecha del archivo.
+// Las fechas anteriores y posteriores ya guardadas no se tocan; repetir el archivo no duplica.
+function vgPlanImport(filas, meses) {
+  let min = filas[0].d, max = filas[0].d;
+  filas.forEach((l) => { if (l.d < min) min = l.d; if (l.d > max) max = l.d; });
+  const nuevasPorMes = new Map();
+  filas.forEach((l) => {
+    const ym = l.d.slice(0, 7);
+    if (!nuevasPorMes.has(ym)) nuevasPorMes.set(ym, []);
+    nuevasPorMes.get(ym).push(l);
+  });
+  const existentes = new Map((meses || []).map((m) => [m.id, m]));
+  const dentro = (l) => l.d >= min && l.d <= max;
+  const docs = [];
+  let [y, m] = [Number(min.slice(0, 4)), Number(min.slice(5, 7))];
+  const [yf, mf] = [Number(max.slice(0, 4)), Number(max.slice(5, 7))];
+  while (y < yf || (y === yf && m <= mf)) {
+    const ym = `${y}-${String(m).padStart(2, "0")}`;
+    const nuevas = nuevasPorMes.get(ym) || [];
+    const ex = existentes.get(ym);
+    const previas = ex ? ex.lineas || [] : [];
+    const quitadas = previas.filter(dentro);
+    if (nuevas.length || quitadas.length) {
+      const lineas = [...previas.filter((l) => !dentro(l)), ...nuevas].sort(
+        (a, b) => a.d.localeCompare(b.d) || a.f.localeCompare(b.f) || a.s.localeCompare(b.s) || a.p.localeCompare(b.p)
+      );
+      docs.push({
+        id: ym, doc: vgDocMes(ym, lineas), nuevas: nuevas.length, quitadas: quitadas.length,
+        totalNuevo: vgR2(nuevas.reduce((s, l) => s + l.t, 0)), totalQuitado: vgR2(quitadas.reduce((s, l) => s + l.t, 0)), existia: !!ex,
+      });
+    }
+    m += 1;
+    if (m > 12) { m = 1; y += 1; }
+  }
+  return {
+    min, max, docs,
+    nuevas: filas.length,
+    totalNuevo: vgR2(filas.reduce((s, l) => s + l.t, 0)),
+    quitadas: docs.reduce((s, x) => s + x.quitadas, 0),
+    totalQuitado: vgR2(docs.reduce((s, x) => s + x.totalQuitado, 0)),
+  };
+}
+
 function VentasGCRView({ tenantId }) {
-  const [meses, setMeses] = useState(null); // null = aún sin cargar
+  const [datosE, setDatosE] = useState({ gcr: null, jmcf: null }); // meses de cada entidad; null = aún sin cargar
+  const [ent, setEnt] = useState("gcr"); // gcr | jmcf | ambas
   const [cargando, setCargando] = useState(false);
   const [error, setError] = useState("");
-  const [paquete, setPaquete] = useState(null); // { nombre, docs }
+  const [paquete, setPaquete] = useState(null); // { nombre, plan, ignoradas, errores, descuadres }
+  const [leyendo, setLeyendo] = useState(false);
   const [progreso, setProgreso] = useState(null); // { hechos, total }
   const [resultado, setResultado] = useState("");
 
@@ -2847,17 +2957,25 @@ function VentasGCRView({ tenantId }) {
   const [desdeB, setDesdeB] = useState("");
   const [hastaB, setHastaB] = useState("");
 
-  const base = `clubes/${tenantId}/ventas_gcr`;
+  const base = `clubes/${tenantId}/${VG_ENTS[ent === "ambas" ? "gcr" : ent].col}`;
+  const mesesSel = ent === "ambas" ? null : datosE[ent]; // lo que se ve y se importa en la pestaña Datos
 
   const cargar = async () => {
     setCargando(true);
     setError("");
-    try {
-      const snap = await getDocs(collection(db, base));
-      setMeses(snap.docs.map((d) => ({ ...d.data(), id: d.id })).sort((a, b) => a.id.localeCompare(b.id)));
-    } catch (e) {
-      setError("No se pudo leer el histórico: " + e.message);
+    const res = {};
+    const fallos = [];
+    for (const k of Object.keys(VG_ENTS)) {
+      try {
+        const snap = await getDocs(collection(db, `clubes/${tenantId}/${VG_ENTS[k].col}`));
+        res[k] = snap.docs.map((d) => ({ ...d.data(), id: d.id })).sort((a, b) => a.id.localeCompare(b.id));
+      } catch (e) {
+        res[k] = [];
+        fallos.push(`${VG_ENTS[k].clave}: ${e.message}`);
+      }
     }
+    setDatosE(res);
+    if (fallos.length) setError("No se pudo leer parte del histórico (" + fallos.join(" · ") + ").");
     setCargando(false);
   };
 
@@ -2865,45 +2983,57 @@ function VentasGCRView({ tenantId }) {
     if (tenantId) cargar();
   }, [tenantId]);
 
+  const cambiarEnt = (e) => {
+    setEnt(e);
+    setFFam("");
+    setFSub("");
+    setPaquete(null);
+    setResultado("");
+    setError("");
+  };
+
   const leerArchivo = async (file) => {
     setError("");
     setResultado("");
     setPaquete(null);
     if (!file) return;
+    if (ent === "ambas") { setError("Para importar elige antes Golf Ciudad Real o JMCF."); return; }
+    setLeyendo(true);
     try {
-      const docs = JSON.parse(await file.text());
-      if (!Array.isArray(docs) || docs.length === 0) throw new Error("el archivo no contiene meses");
-      docs.forEach((d) => {
-        if (!/^\d{4}-\d{2}$/.test(d.id || "") || !Array.isArray(d.lineas)) {
-          throw new Error("estructura no válida en el mes " + (d.id || "?"));
-        }
-      });
-      setPaquete({ nombre: file.name, docs });
+      const { filas, ignoradas, errores, descuadres } = await vgParsearTPV(file);
+      if (filas.length === 0) throw new Error("no se ha encontrado ninguna venta con fecha válida");
+      // Seguridad: el nombre del archivo (Ventas_GCR_… / Ventas_JMCF_…) debe corresponder a la entidad elegida.
+      const deArchivo = /jmcf/i.test(file.name) ? "jmcf" : /gcr/i.test(file.name) ? "gcr" : null;
+      const bloqueo = deArchivo && deArchivo !== ent
+        ? `El nombre del archivo parece de ${VG_ENTS[deArchivo].clave}, pero estás importando en ${VG_ENTS[ent].clave}. Cambia de entidad arriba o renómbralo si es un error.`
+        : "";
+      setPaquete({ nombre: file.name, plan: vgPlanImport(filas, mesesSel), ignoradas, errores, descuadres, bloqueo });
     } catch (e) {
-      setError("Archivo no válido: " + e.message);
+      setError("No se ha podido leer el archivo: " + e.message);
     }
+    setLeyendo(false);
   };
 
   const importar = async () => {
-    if (!paquete) return;
+    if (!paquete || paquete.errores.length > 0 || paquete.bloqueo || ent === "ambas") return;
     setError("");
     setResultado("");
-    const docs = paquete.docs;
+    const docs = paquete.plan.docs;
     let actual = "";
     setProgreso({ hechos: 0, total: docs.length });
     try {
       for (let i = 0; i < docs.length; i++) {
-        const { id, ...datos } = docs[i];
+        const { id, ...datos } = docs[i].doc;
         actual = id;
-        // setDoc sobrescribe el mes completo: se puede repetir sin duplicar nada.
-        await setDoc(doc(db, base, id), { ...datos, origen: "excel_tpv_historico", importadoEn: serverTimestamp() });
+        // setDoc escribe el mes ya fusionado: repetir el mismo archivo no duplica nada.
+        await setDoc(doc(db, base, id), { ...datos, origen: "excel_tpv", importadoEn: serverTimestamp() });
         setProgreso({ hechos: i + 1, total: docs.length });
       }
-      setResultado(`Importados ${docs.length} meses correctamente.`);
+      setResultado(`Importación terminada: ${docs.length} ${docs.length === 1 ? "mes actualizado" : "meses actualizados"} (${vgFmtDia(paquete.plan.min)} – ${vgFmtDia(paquete.plan.max)}).`);
       setPaquete(null);
       await cargar();
     } catch (e) {
-      setError(`Se detuvo en el mes ${actual}: ${e.message}. Los meses anteriores están bien guardados; puedes volver a importar sin duplicar.`);
+      setError(`Se detuvo en el mes ${actual}: ${e.message}. Los meses anteriores están bien guardados; puedes volver a importar el mismo archivo sin duplicar.`);
     }
     setProgreso(null);
   };
@@ -2913,7 +3043,7 @@ function VentasGCRView({ tenantId }) {
 
   const porAnio = useMemo(() => {
     const r = {};
-    (meses || []).forEach((d) => {
+    (mesesSel || []).forEach((d) => {
       const a = d.anio || Number(d.id.slice(0, 4));
       r[a] = r[a] || { meses: 0, lineas: 0, total: 0 };
       r[a].meses += 1;
@@ -2921,13 +3051,22 @@ function VentasGCRView({ tenantId }) {
       r[a].total += Number(d.total || 0);
     });
     return Object.entries(r).sort((a, b) => a[0] - b[0]);
-  }, [meses]);
+  }, [mesesSel]);
 
   // ------------------------------ Datos base del informe ------------------------------
-  const flat = useMemo(
-    () => (meses || []).flatMap((m) => (m.lineas || []).map((l) => ({ ...l, ym: m.id }))),
-    [meses]
-  );
+  // En la vista "Ambas" las familias de JMCF llevan el sufijo (JMCF) para no mezclarlas con las del club
+  // (las dos tienen una familia ACADEMIA distinta).
+  const flat = useMemo(() => {
+    const out = [];
+    const sumar = (arr, sufijo) =>
+      (arr || []).forEach((m) =>
+        (m.lineas || []).forEach((l) => out.push(sufijo ? { ...l, f: `${l.f} (${sufijo})`, ym: m.id } : { ...l, ym: m.id }))
+      );
+    if (ent === "gcr" || ent === "ambas") sumar(datosE.gcr, "");
+    if (ent === "jmcf") sumar(datosE.jmcf, "");
+    if (ent === "ambas") sumar(datosE.jmcf, "JMCF");
+    return out;
+  }, [datosE, ent]);
   const [minF, maxF] = useMemo(() => {
     if (!flat.length) return ["", ""];
     let mn = flat[0].d, mx = flat[0].d;
@@ -2945,6 +3084,10 @@ function VentasGCRView({ tenantId }) {
   useEffect(() => {
     if (presets && !desde && !hasta) aplicarPreset("anio");
   }, [presets]);
+  useEffect(() => {
+    // Al cambiar de entidad, los rangos rápidos se recalculan con las fechas de esa entidad.
+    if (presets && preset !== "custom") aplicarPreset(preset);
+  }, [ent]);
 
   const familias = useMemo(() => [...new Set(flat.map((l) => l.f))].sort(), [flat]);
   const subfamilias = useMemo(
@@ -3039,14 +3182,19 @@ function VentasGCRView({ tenantId }) {
     ["Media diaria", diasPeriodo ? fmtEUR(tot.t / diasPeriodo) : "—"],
   ];
 
-  const hayDatos = meses && meses.length > 0;
+  const hayDatos = flat.length > 0;
 
   return (
     <div style={{ maxWidth: 1000 }}>
-      <h1 style={{ margin: 0, fontSize: 26, color: theme.ink }}>Ventas Golf Ciudad Real</h1>
+      <h1 style={{ margin: 0, fontSize: 26, color: theme.ink }}>Ventas</h1>
       <p style={{ color: theme.inkSoft, marginTop: 6 }}>
         Histórico de ventas del TPV, un documento por mes. Solo lo ves tú (superadmin).
       </p>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 16 }}>
+        {[["gcr", "Golf Ciudad Real"], ["jmcf", "JMCF · Pro Shop y Academia"], ["ambas", "Ambas"]].map(([id, nombre]) => (
+          <button key={id} onClick={() => cambiarEnt(id)} style={chip(ent === id)}>{nombre}</button>
+        ))}
+      </div>
 
       {error && (
         <div style={{ background: "#FBEAE5", color: theme.danger, padding: 12, borderRadius: 10, marginBottom: 16, fontSize: 14 }}>{error}</div>
@@ -3059,7 +3207,9 @@ function VentasGCRView({ tenantId }) {
       {hayDatos && (
         <>
           <div style={{ background: theme.accentSoft, color: theme.ink, padding: "10px 14px", borderRadius: 10, fontSize: 13, marginBottom: 16 }}>
-            Ojo: en este histórico Academia y Proshop están incompletos y Restauración no aparece desde 2024. Los importes llevan IVA incluido en "Total".
+            {ent === "gcr" && 'Golf Ciudad Real: Restauración no aparece desde 2024. Los importes llevan IVA incluido en "Total". Pro Shop y Academia Pro están en JMCF.'}
+            {ent === "jmcf" && 'JMCF (actividad propia): Pro Shop y clases de Academia. Los importes llevan IVA incluido en "Total"; las líneas de «Recarga bono Proshop» pueden salir en negativo.'}
+            {ent === "ambas" && 'Vista combinada de las dos entidades. Las familias de JMCF llevan el sufijo (JMCF), para distinguir su Academia de la del club.'}
           </div>
 
           {/* ---------------- Filtros comunes a todas las pestañas ---------------- */}
@@ -3117,7 +3267,9 @@ function VentasGCRView({ tenantId }) {
 
       {!hayDatos && !cargando && tab !== "datos" && (
         <Card>
-          <div style={{ color: theme.inkSoft, fontSize: 14 }}>Todavía no hay ventas cargadas. Ve a la pestaña <b>Datos</b> para importar el histórico.</div>
+          <div style={{ color: theme.inkSoft, fontSize: 14 }}>
+            No hay ventas cargadas {ent === "ambas" ? "todavía" : `de ${VG_ENTS[ent].nombre}`}. Ve a la pestaña <b>Datos</b> para importarlas.
+          </div>
         </Card>
       )}
 
@@ -3451,15 +3603,22 @@ function VentasGCRView({ tenantId }) {
       {tab === "datos" && (
         <>
           <Card style={{ marginBottom: 20 }}>
-            <div style={{ fontWeight: 700, color: theme.ink, marginBottom: 12 }}>Lo que hay guardado ahora</div>
+            <div style={{ fontWeight: 700, color: theme.ink, marginBottom: 12 }}>
+              Lo que hay guardado ahora{ent !== "ambas" ? ` · ${VG_ENTS[ent].nombre}` : ""}
+            </div>
+            {ent === "ambas" && (
+              <div style={{ color: theme.inkSoft, fontSize: 14 }}>
+                Para ver lo guardado o importar ventas, elige arriba <b>Golf Ciudad Real</b> o <b>JMCF</b>. "Ambas" es solo para consultar informes.
+              </div>
+            )}
             {cargando && <div style={{ color: theme.inkSoft }}>Leyendo…</div>}
-            {!cargando && meses && meses.length === 0 && (
+            {!cargando && mesesSel && mesesSel.length === 0 && (
               <div style={{ color: theme.inkSoft }}>Todavía no hay ventas importadas.</div>
             )}
-            {!cargando && meses && meses.length > 0 && (
+            {!cargando && mesesSel && mesesSel.length > 0 && (
               <>
                 <div style={{ color: theme.ink, marginBottom: 12, fontSize: 14 }}>
-                  <b>{meses.length}</b> meses · <b>{sumaLineas(meses).toLocaleString("es-ES")}</b> líneas · <b>{fmtEUR(sumaTotal(meses))}</b>
+                  <b>{mesesSel.length}</b> meses · <b>{sumaLineas(mesesSel).toLocaleString("es-ES")}</b> líneas · <b>{fmtEUR(sumaTotal(mesesSel))}</b>
                 </div>
                 <table style={{ width: "100%", borderCollapse: "collapse" }}>
                   <thead>
@@ -3481,24 +3640,85 @@ function VentasGCRView({ tenantId }) {
           </Card>
 
           <Card>
-            <div style={{ fontWeight: 700, color: theme.ink, marginBottom: 6 }}>Importar histórico</div>
-            <div style={{ color: theme.inkSoft, fontSize: 13, marginBottom: 14 }}>
-              Elige el archivo <b>ventas_gcr_meses.json</b>. Antes de guardar nada te enseño qué contiene. Si lo repites, se sobrescriben los mismos meses sin duplicar.
+            <div style={{ fontWeight: 700, color: theme.ink, marginBottom: 6 }}>
+              Añadir o actualizar ventas del TPV{ent !== "ambas" ? ` · ${VG_ENTS[ent].nombre}` : ""}
             </div>
-            <input type="file" accept=".json,application/json" onChange={(e) => leerArchivo(e.target.files?.[0])} disabled={!!progreso} />
+            <div style={{ color: theme.inkSoft, fontSize: 13, marginBottom: 14, lineHeight: 1.5 }}>
+              Elige el Excel que exporta el TPV (<b>Ventas agrupadas por Familia, Subfamilias y Productos por días</b>). Puede traer solo unos días o meses nuevos.
+              Se sustituye únicamente lo que está entre la primera y la última fecha del archivo; el resto del histórico no se toca, y si repites el mismo archivo no se duplica nada.
+              Antes de guardar te enseño qué cambia.
+            </div>
+            <input type="file" accept=".xlsx,.xls,.csv" onChange={(e) => { leerArchivo(e.target.files?.[0]); e.target.value = ""; }} disabled={!!progreso || leyendo || ent === "ambas"} />
+            {leyendo && <div style={{ marginTop: 12, color: theme.inkSoft, fontSize: 14 }}>Leyendo el archivo…</div>}
 
             {paquete && (
-              <div style={{ marginTop: 16, padding: 12, background: theme.accentSoft, borderRadius: 10, fontSize: 14, color: theme.ink }}>
-                <div><b>{paquete.nombre}</b></div>
-                <div style={{ marginTop: 4 }}>
-                  {paquete.docs.length} meses ({paquete.docs[0].id} a {paquete.docs[paquete.docs.length - 1].id}) · {sumaLineas(paquete.docs).toLocaleString("es-ES")} líneas · {fmtEUR(sumaTotal(paquete.docs))}
+              <div style={{ marginTop: 16 }}>
+                <div style={{ padding: 12, background: theme.accentSoft, borderRadius: 10, fontSize: 14, color: theme.ink, lineHeight: 1.6 }}>
+                  <div><b>{paquete.nombre}</b></div>
+                  <div>Del <b>{vgFmtDia(paquete.plan.min)}</b> al <b>{vgFmtDia(paquete.plan.max)}</b></div>
+                  <div><b>{paquete.plan.nuevas.toLocaleString("es-ES")}</b> líneas del archivo · <b>{fmtEUR(paquete.plan.totalNuevo)}</b></div>
+                  <div>
+                    {paquete.plan.quitadas > 0
+                      ? <>Sustituyen a <b>{paquete.plan.quitadas.toLocaleString("es-ES")}</b> líneas ya guardadas en esas fechas (<b>{fmtEUR(paquete.plan.totalQuitado)}</b>).</>
+                      : <>Son fechas nuevas: no sustituyen nada de lo ya guardado.</>}
+                  </div>
+                  <div>Diferencia sobre lo guardado: <b>{fmtEUR(paquete.plan.totalNuevo - paquete.plan.totalQuitado)}</b></div>
+                </div>
+
+                {paquete.bloqueo && (
+                  <div style={{ marginTop: 10, background: "#FBEAE5", color: theme.danger, padding: 10, borderRadius: 10, fontSize: 13, fontWeight: 600 }}>
+                    {paquete.bloqueo}
+                  </div>
+                )}
+                {paquete.errores.length > 0 && (
+                  <div style={{ marginTop: 10, background: "#FBEAE5", color: theme.danger, padding: 10, borderRadius: 10, fontSize: 13 }}>
+                    Hay {paquete.errores.length} filas con importes que no se entienden (filas {paquete.errores.slice(0, 8).join(", ")}{paquete.errores.length > 8 ? "…" : ""}). No se puede importar hasta corregirlas.
+                  </div>
+                )}
+                {paquete.descuadres > 0 && (
+                  <div style={{ marginTop: 10, background: theme.accentSoft, color: theme.ink, padding: 10, borderRadius: 10, fontSize: 13 }}>
+                    Aviso: en {paquete.descuadres} filas Base + IVA no suma exactamente el Total. Se importan tal cual vienen.
+                  </div>
+                )}
+                {paquete.ignoradas > 0 && (
+                  <div style={{ marginTop: 10, fontSize: 12, color: theme.inkSoft }}>
+                    {paquete.ignoradas} {paquete.ignoradas === 1 ? "fila sin fecha válida ignorada" : "filas sin fecha válida ignoradas"} (por ejemplo, la fila de totales del final).
+                  </div>
+                )}
+
+                <div style={{ overflowX: "auto", marginTop: 12 }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                    <thead>
+                      <tr>
+                        <th style={th}>Mes</th>
+                        <th style={{ ...th, ...r }}>Líneas nuevas</th>
+                        <th style={{ ...th, ...r }}>Sustituye</th>
+                        <th style={{ ...th, ...r }}>Total nuevo</th>
+                        <th style={{ ...th, ...r }}>Había</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {paquete.plan.docs.slice(-24).map((x) => (
+                        <tr key={x.id}>
+                          <td style={td}>{x.id}{!x.existia ? " (nuevo)" : ""}</td>
+                          <td style={{ ...td, ...r }}>{x.nuevas.toLocaleString("es-ES")}</td>
+                          <td style={{ ...td, ...r }}>{x.quitadas.toLocaleString("es-ES")}</td>
+                          <td style={{ ...td, ...r }}>{fmtEUR(x.totalNuevo)}</td>
+                          <td style={{ ...td, ...r, color: theme.inkSoft }}>{fmtEUR(x.totalQuitado)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {paquete.plan.docs.length > 24 && (
+                    <div style={{ fontSize: 12, color: theme.inkSoft, marginTop: 6 }}>Se muestran los 24 últimos meses de {paquete.plan.docs.length}.</div>
+                  )}
                 </div>
               </div>
             )}
 
             <div style={{ marginTop: 16, display: "flex", alignItems: "center", gap: 12 }}>
-              <button onClick={importar} disabled={!paquete || !!progreso} style={boton(!!paquete && !progreso)}>
-                {progreso ? "Importando…" : paquete ? `Importar ${paquete.docs.length} meses` : "Importar"}
+              <button onClick={importar} disabled={!paquete || paquete.errores.length > 0 || !!paquete.bloqueo || !!progreso} style={boton(!!paquete && paquete.errores.length === 0 && !paquete.bloqueo && !progreso)}>
+                {progreso ? "Importando…" : paquete ? `Guardar ${paquete.plan.docs.length} ${paquete.plan.docs.length === 1 ? "mes" : "meses"}` : "Guardar"}
               </button>
               {progreso && <span style={{ fontSize: 14, color: theme.inkSoft }}>{progreso.hechos} de {progreso.total} meses</span>}
             </div>
