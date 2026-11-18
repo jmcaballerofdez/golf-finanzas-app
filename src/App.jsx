@@ -3,6 +3,7 @@ import { db, auth, storage, leerTicketIA } from "./firebase";
 import { ref, uploadBytes } from "firebase/storage";
 import {
   collection,
+  getDocs,
   onSnapshot,
   addDoc,
   updateDoc,
@@ -287,6 +288,7 @@ function Sidebar({ active, setActive, onLogout, userEmail, esSuper }) {
     { id: "resumen", label: "Resumen", icon: LayoutDashboard },
     { id: "transacciones", label: "Transacciones", icon: Receipt },
     { id: "informes", label: "Informes", icon: FileText },
+    { id: "ventas_gcr", label: "Ventas GCR", icon: ShoppingCart },
     { id: "presupuestos", label: "Presupuestos", icon: Wallet },
     { id: "metas", label: "Metas", icon: Target },
     { id: "tareas", label: "Tareas", icon: CheckSquare },
@@ -2710,6 +2712,174 @@ function MisTareasVista({ db, F, ink = "#f3f6f4", soft = "#c9d3cc" }) {
   );
 }
 
+/* ============================ VENTAS GCR (histórico) ============================ */
+// Histórico de ventas del club (TPV). Un documento por mes en
+// clubes/{tenant}/ventas_gcr, con todas las líneas del mes dentro.
+// Se guarda aparte de finanzas_transacciones a propósito: esa colección se
+// carga entera en vivo y con 41.000 filas la app iría lenta.
+function VentasGCRView({ tenantId }) {
+  const [meses, setMeses] = useState(null); // null = aún sin cargar
+  const [cargando, setCargando] = useState(false);
+  const [error, setError] = useState("");
+  const [paquete, setPaquete] = useState(null); // { nombre, docs }
+  const [progreso, setProgreso] = useState(null); // { hechos, total }
+  const [resultado, setResultado] = useState("");
+
+  const base = `clubes/${tenantId}/ventas_gcr`;
+
+  const cargar = async () => {
+    setCargando(true);
+    setError("");
+    try {
+      const snap = await getDocs(collection(db, base));
+      setMeses(snap.docs.map((d) => ({ ...d.data(), id: d.id })).sort((a, b) => a.id.localeCompare(b.id)));
+    } catch (e) {
+      setError("No se pudo leer el histórico: " + e.message);
+    }
+    setCargando(false);
+  };
+
+  useEffect(() => {
+    if (tenantId) cargar();
+  }, [tenantId]);
+
+  const leerArchivo = async (file) => {
+    setError("");
+    setResultado("");
+    setPaquete(null);
+    if (!file) return;
+    try {
+      const docs = JSON.parse(await file.text());
+      if (!Array.isArray(docs) || docs.length === 0) throw new Error("el archivo no contiene meses");
+      docs.forEach((d) => {
+        if (!/^\d{4}-\d{2}$/.test(d.id || "") || !Array.isArray(d.lineas)) {
+          throw new Error("estructura no válida en el mes " + (d.id || "?"));
+        }
+      });
+      setPaquete({ nombre: file.name, docs });
+    } catch (e) {
+      setError("Archivo no válido: " + e.message);
+    }
+  };
+
+  const importar = async () => {
+    if (!paquete) return;
+    setError("");
+    setResultado("");
+    const docs = paquete.docs;
+    let actual = "";
+    setProgreso({ hechos: 0, total: docs.length });
+    try {
+      for (let i = 0; i < docs.length; i++) {
+        const { id, ...datos } = docs[i];
+        actual = id;
+        // setDoc sobrescribe el mes completo: se puede repetir sin duplicar nada.
+        await setDoc(doc(db, base, id), { ...datos, origen: "excel_tpv_historico", importadoEn: serverTimestamp() });
+        setProgreso({ hechos: i + 1, total: docs.length });
+      }
+      setResultado(`Importados ${docs.length} meses correctamente.`);
+      setPaquete(null);
+      await cargar();
+    } catch (e) {
+      setError(`Se detuvo en el mes ${actual}: ${e.message}. Los meses anteriores están bien guardados; puedes volver a importar sin duplicar.`);
+    }
+    setProgreso(null);
+  };
+
+  const sumaLineas = (arr) => arr.reduce((s, d) => s + (d.nLineas || (d.lineas || []).length), 0);
+  const sumaTotal = (arr) => arr.reduce((s, d) => s + Number(d.total || 0), 0);
+
+  const porAnio = useMemo(() => {
+    const r = {};
+    (meses || []).forEach((d) => {
+      const a = d.anio || Number(d.id.slice(0, 4));
+      r[a] = r[a] || { meses: 0, lineas: 0, total: 0 };
+      r[a].meses += 1;
+      r[a].lineas += d.nLineas || (d.lineas || []).length;
+      r[a].total += Number(d.total || 0);
+    });
+    return Object.entries(r).sort((a, b) => a[0] - b[0]);
+  }, [meses]);
+
+  const th = { textAlign: "left", padding: "8px 12px", fontSize: 12, color: theme.inkSoft, borderBottom: `1px solid ${theme.border}` };
+  const td = { padding: "8px 12px", fontSize: 14, color: theme.ink, borderBottom: `1px solid ${theme.border}` };
+  const boton = (activo) => ({
+    padding: "10px 16px", borderRadius: 10, border: "none", fontWeight: 600, fontSize: 14,
+    background: activo ? theme.pine : theme.border, color: activo ? "#fff" : theme.inkSoft,
+    cursor: activo ? "pointer" : "not-allowed",
+  });
+
+  return (
+    <div style={{ maxWidth: 900 }}>
+      <h1 style={{ margin: 0, fontSize: 26, color: theme.ink }}>Ventas Golf Ciudad Real</h1>
+      <p style={{ color: theme.inkSoft, marginTop: 6 }}>
+        Histórico de ventas del TPV, un documento por mes. Solo lo ves tú (superadmin).
+      </p>
+
+      {error && (
+        <div style={{ background: "#FBEAE5", color: theme.danger, padding: 12, borderRadius: 10, marginBottom: 16, fontSize: 14 }}>{error}</div>
+      )}
+      {resultado && (
+        <div style={{ background: "#E7F3EB", color: theme.success, padding: 12, borderRadius: 10, marginBottom: 16, fontSize: 14 }}>{resultado}</div>
+      )}
+
+      <Card style={{ marginBottom: 20 }}>
+        <div style={{ fontWeight: 700, color: theme.ink, marginBottom: 12 }}>Lo que hay guardado ahora</div>
+        {cargando && <div style={{ color: theme.inkSoft }}>Leyendo…</div>}
+        {!cargando && meses && meses.length === 0 && (
+          <div style={{ color: theme.inkSoft }}>Todavía no hay ventas importadas.</div>
+        )}
+        {!cargando && meses && meses.length > 0 && (
+          <>
+            <div style={{ color: theme.ink, marginBottom: 12, fontSize: 14 }}>
+              <b>{meses.length}</b> meses · <b>{sumaLineas(meses).toLocaleString("es-ES")}</b> líneas · <b>{fmtEUR(sumaTotal(meses))}</b>
+            </div>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead>
+                <tr><th style={th}>Año</th><th style={th}>Meses</th><th style={th}>Líneas</th><th style={{ ...th, textAlign: "right" }}>Total</th></tr>
+              </thead>
+              <tbody>
+                {porAnio.map(([anio, v]) => (
+                  <tr key={anio}>
+                    <td style={td}>{anio}</td>
+                    <td style={td}>{v.meses}</td>
+                    <td style={td}>{v.lineas.toLocaleString("es-ES")}</td>
+                    <td style={{ ...td, textAlign: "right" }}>{fmtEUR(v.total)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </>
+        )}
+      </Card>
+
+      <Card>
+        <div style={{ fontWeight: 700, color: theme.ink, marginBottom: 6 }}>Importar histórico</div>
+        <div style={{ color: theme.inkSoft, fontSize: 13, marginBottom: 14 }}>
+          Elige el archivo <b>ventas_gcr_meses.json</b>. Antes de guardar nada te enseño qué contiene. Si lo repites, se sobrescriben los mismos meses sin duplicar.
+        </div>
+        <input type="file" accept=".json,application/json" onChange={(e) => leerArchivo(e.target.files?.[0])} disabled={!!progreso} />
+
+        {paquete && (
+          <div style={{ marginTop: 16, padding: 12, background: theme.accentSoft, borderRadius: 10, fontSize: 14, color: theme.ink }}>
+            <div><b>{paquete.nombre}</b></div>
+            <div style={{ marginTop: 4 }}>
+              {paquete.docs.length} meses ({paquete.docs[0].id} a {paquete.docs[paquete.docs.length - 1].id}) · {sumaLineas(paquete.docs).toLocaleString("es-ES")} líneas · {fmtEUR(sumaTotal(paquete.docs))}
+            </div>
+          </div>
+        )}
+
+        <div style={{ marginTop: 16, display: "flex", alignItems: "center", gap: 12 }}>
+          <button onClick={importar} disabled={!paquete || !!progreso} style={boton(!!paquete && !progreso)}>
+            {progreso ? "Importando…" : paquete ? `Importar ${paquete.docs.length} meses` : "Importar"}
+          </button>
+          {progreso && <span style={{ fontSize: 14, color: theme.inkSoft }}>{progreso.hechos} de {progreso.total} meses</span>}
+        </div>
+      </Card>
+    </div>
+  );
+}
+
 function App() {
   const { currentUser: user, userRole: role, modulosActivos, tenantId } = useAuth();
   const [active, setActive] = useState("resumen");
@@ -2839,6 +3009,7 @@ function App() {
         {active === "informes" && (
           <InformesView transacciones={todasTransacciones} ventasProshop={ventasProshop} />
         )}
+        {active === "ventas_gcr" && <VentasGCRView tenantId={tenantId} />}
         {active === "presupuestos" && (
           <PresupuestosView presupuestos={presupuestos} transacciones={todasTransacciones} />
         )}
