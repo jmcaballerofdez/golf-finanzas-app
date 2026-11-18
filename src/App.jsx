@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { db, auth, storage, leerTicketIA } from "./firebase";
-import { ref, uploadBytes, getDownloadURL, getBlob } from "firebase/storage";
+import { ref, uploadBytes, getDownloadURL, getBlob, deleteObject } from "firebase/storage";
 import {
   collection,
   getDocs,
@@ -968,6 +968,7 @@ function EscanearTicketModal({ onClose, onDetectado, tenantId }) {
         amount: data?.importeTotal != null ? String(data.importeTotal) : "",
         date: data?.fecha || hoy(),
         description: (data?.descripcion || data?.proveedor || "").slice(0, 60),
+        proveedor: (data?.proveedor || "").slice(0, 80),
         tipo: data?.tipo === "ingreso" ? "income" : "expense",
         categoriaSugerida: data?.categoriaSugerida || "",
         ivaPct: data?.ivaPct != null ? String(data.ivaPct) : "",
@@ -1328,6 +1329,7 @@ function TransaccionForm({ onClose, onSave, initial, categorias, entidadInicial 
     type: tipoInicial,
     category: categoriaInicial,
     subcategory: "",
+    proveedor: initial?.proveedor || "",
     description: initial?.description || "",
     amount: initial?.amount || "",
     date: initial?.date || new Date().toISOString().slice(0, 10),
@@ -1450,6 +1452,9 @@ function TransaccionForm({ onClose, onSave, initial, categorias, entidadInicial 
           {((categorias?.subcategorias || {})[form.category] || []).map((s) => <option key={s} value={s} />)}
         </datalist>
 
+        <label style={label}>Proveedor (opcional)</label>
+        <input style={inputStyle} value={form.proveedor} onChange={set("proveedor")} placeholder="Ej: Leroy Merlin" />
+
         <label style={label}>Descripción</label>
         <input style={inputStyle} value={form.description} onChange={set("description")} />
 
@@ -1504,7 +1509,7 @@ function TransaccionForm({ onClose, onSave, initial, categorias, entidadInicial 
   );
 }
 
-function TransaccionesView({ transacciones, onAdd, categorias, tenantId, entidad, onCambiarEntidad }) {
+function TransaccionesView({ transacciones, onAdd, categorias, tenantId, entidad, onCambiarEntidad, onBorrar }) {
   const [showForm, setShowForm] = useState(false);
   const [showScan, setShowScan] = useState(false);
   const [showImportar, setShowImportar] = useState(false);
@@ -1588,7 +1593,7 @@ function TransaccionesView({ transacciones, onAdd, categorias, tenantId, entidad
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
             <tr style={{ borderBottom: `1px solid ${theme.border}` }}>
-              {["Fecha", "Categoría", "Descripción", "Tipo", "Importe", "Entidad", "Archivo"].map((h) => (
+              {["Fecha", "Categoría", "Proveedor", "Descripción", "Tipo", "Importe", "Entidad", "Archivo", ""].map((h) => (
                 <th
                   key={h}
                   style={{
@@ -1609,6 +1614,7 @@ function TransaccionesView({ transacciones, onAdd, categorias, tenantId, entidad
               <tr key={t.id} style={{ borderBottom: `1px solid ${theme.border}` }}>
                 <td style={{ padding: "12px 16px", fontSize: 14 }}>{fmtDate(t.date)}</td>
                 <td style={{ padding: "12px 16px", fontSize: 14 }}>{t.category}</td>
+                <td style={{ padding: "12px 16px", fontSize: 14 }}>{t.proveedor || <span style={{ color: theme.border }}>—</span>}</td>
                 <td style={{ padding: "12px 16px", fontSize: 14, color: theme.inkSoft }}>
                   {t.description || "—"}
                 </td>
@@ -1650,6 +1656,15 @@ function TransaccionesView({ transacciones, onAdd, categorias, tenantId, entidad
                     >📎 Ver</button>
                   ) : (
                     <span style={{ color: theme.border }}>—</span>
+                  )}
+                </td>
+                <td style={{ padding: "12px 8px", fontSize: 13 }}>
+                  {!String(t.id).startsWith("academia-") && onBorrar && (
+                    <button
+                      onClick={() => onBorrar(t)}
+                      title="Borrar esta transacción"
+                      style={{ border: "none", background: "transparent", color: theme.danger, cursor: "pointer", padding: 4 }}
+                    ><Trash2 size={16} /></button>
                   )}
                 </td>
               </tr>
@@ -2908,6 +2923,7 @@ async function gzExcel(txs, nombres, titulo) {
     { header: "Tipo", key: "t", width: 10 },
     { header: "Categoría", key: "c", width: 26 },
     { header: "Subcategoría", key: "s", width: 22 },
+    { header: "Proveedor", key: "v", width: 28 },
     { header: "Descripción", key: "d", width: 44 },
     { header: "Base imponible", key: "b", width: 15 },
     { header: "IVA %", key: "p", width: 8 },
@@ -2924,7 +2940,7 @@ async function gzExcel(txs, nombres, titulo) {
     const iva = base !== null ? (t.iva_amount !== null && t.iva_amount !== undefined && t.iva_amount !== "" ? Number(t.iva_amount) : Math.round((total - base) * 100) / 100) : null;
     if (t.type === "income") ingresos += total; else gastos += total;
     ws.addRow({
-      f: aFecha(t.date), t: t.type === "income" ? "Ingreso" : "Gasto", c: t.category || "", s: t.subcategory || "", d: t.description || "",
+      f: aFecha(t.date), t: t.type === "income" ? "Ingreso" : "Gasto", c: t.category || "", s: t.subcategory || "", v: t.proveedor || "", d: t.description || "",
       b: base, p: t.iva_type !== "" && t.iva_type !== null && t.iva_type !== undefined ? Number(String(t.iva_type).replace("%", "")) : null,
       i: iva, n: total, a: nombres[t.id] ? `archivos/${nombres[t.id]}` : "",
     });
@@ -3118,6 +3134,7 @@ function GestoriaView({ transacciones, entidad }) {
             <thead>
               <tr>
                 <th style={th}>Fecha</th>
+                <th style={th}>Proveedor</th>
                 <th style={th}>Descripción</th>
                 <th style={th}>Categoría</th>
                 <th style={th}>Tipo</th>
@@ -3129,6 +3146,7 @@ function GestoriaView({ transacciones, entidad }) {
               {filas.slice(0, MAX).map((t) => (
                 <tr key={t.id}>
                   <td style={td}>{fmtDate(t.date)}</td>
+                  <td style={td}>{t.proveedor || "—"}</td>
                   <td style={td}>{t.description || "—"}</td>
                   <td style={{ ...td, color: theme.inkSoft }}>{t.category}</td>
                   <td style={td}>{t.type === "income" ? "Ingreso" : "Gasto"}</td>
@@ -3136,7 +3154,7 @@ function GestoriaView({ transacciones, entidad }) {
                   <td style={td}>{t.ticket_path ? "📎 Sí" : <span style={{ color: theme.inkSoft }}>—</span>}</td>
                 </tr>
               ))}
-              {filas.length === 0 && <tr><td style={{ ...td, color: theme.inkSoft }} colSpan={6}>No hay movimientos en ese periodo.</td></tr>}
+              {filas.length === 0 && <tr><td style={{ ...td, color: theme.inkSoft }} colSpan={7}>No hay movimientos en ese periodo.</td></tr>}
             </tbody>
           </table>
         </div>
@@ -4251,6 +4269,21 @@ function App() {
     });
   };
 
+  // Borra una transacción (y, si tiene, intenta borrar también su archivo). Pide confirmación.
+  const handleBorrarTransaccion = async (t) => {
+    const nombre = t.description || t.proveedor || t.category || "esta transacción";
+    if (!window.confirm(`¿Borrar «${nombre}» (${fmtEUR(t.amount)})?\n\nEsta acción no se puede deshacer.${t.ticket_path ? "\nTambién se borrará su archivo adjunto." : ""}`)) return;
+    try {
+      await deleteDoc(doc(db, `clubes/${tenantId}/finanzas_transacciones`, t.id));
+    } catch (e) {
+      window.alert("No se ha podido borrar: " + (e?.message || e));
+      return;
+    }
+    if (t.ticket_path) {
+      try { await deleteObject(ref(storage, t.ticket_path)); } catch (e) { console.warn("No se pudo borrar el archivo adjunto:", e); }
+    }
+  };
+
   const handleCambiarEntidad = async (id, nueva) => {
     try {
       await updateDoc(doc(db, `clubes/${tenantId}/finanzas_transacciones`, id), { entidad: nueva });
@@ -4325,7 +4358,7 @@ function App() {
           />
         )}
         {active === "transacciones" && (
-          <TransaccionesView transacciones={transaccionesVista} onAdd={handleAddTransaccion} categorias={categorias || CATEGORIAS_DEFECTO} tenantId={tenantId} entidad={entidad} onCambiarEntidad={handleCambiarEntidad} />
+          <TransaccionesView transacciones={transaccionesVista} onAdd={handleAddTransaccion} categorias={categorias || CATEGORIAS_DEFECTO} tenantId={tenantId} entidad={entidad} onCambiarEntidad={handleCambiarEntidad} onBorrar={handleBorrarTransaccion} />
         )}
         {active === "informes" && (
           <InformesView transacciones={transaccionesVista} ventasProshop={ventasProshopVista} />
