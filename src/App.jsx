@@ -2801,6 +2801,95 @@ function VentasGCRView({ tenantId }) {
     return Object.entries(r).sort((a, b) => a[0] - b[0]);
   }, [meses]);
 
+  // ------------------------------ Informe con filtros ------------------------------
+  const [desde, setDesde] = useState("");
+  const [hasta, setHasta] = useState("");
+  const [fFam, setFFam] = useState("");
+  const [fSub, setFSub] = useState("");
+  const [fProd, setFProd] = useState("");
+  const [agrupar, setAgrupar] = useState("mes");
+
+  // Al cargar los datos, por defecto se muestra el año en curso del histórico.
+  useEffect(() => {
+    if (meses && meses.length && !desde && !hasta) {
+      const ultimo = meses[meses.length - 1].id;
+      setHasta(ultimo);
+      setDesde(`${ultimo.slice(0, 4)}-01`);
+    }
+  }, [meses]);
+
+  const norm = (s) => String(s || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+
+  const ids = useMemo(() => (meses || []).map((m) => m.id), [meses]);
+  const flat = useMemo(
+    () => (meses || []).flatMap((m) => (m.lineas || []).map((l) => ({ ...l, ym: m.id }))),
+    [meses]
+  );
+  const familias = useMemo(() => [...new Set(flat.map((l) => l.f))].sort(), [flat]);
+  const subfamilias = useMemo(
+    () => [...new Set(flat.filter((l) => !fFam || l.f === fFam).map((l) => l.s))].sort(),
+    [flat, fFam]
+  );
+
+  const filtradas = useMemo(() => {
+    const q = norm(fProd);
+    return flat.filter(
+      (l) =>
+        (!desde || l.ym >= desde) &&
+        (!hasta || l.ym <= hasta) &&
+        (!fFam || l.f === fFam) &&
+        (!fSub || l.s === fSub) &&
+        (!q || norm(l.p).includes(q))
+    );
+  }, [flat, desde, hasta, fFam, fSub, fProd]);
+
+  const grupos = useMemo(() => {
+    const clave = {
+      mes: (l) => l.ym,
+      anio: (l) => l.ym.slice(0, 4),
+      familia: (l) => l.f,
+      subfamilia: (l) => `${l.f} · ${l.s}`,
+      producto: (l) => l.p,
+    }[agrupar];
+    const m = new Map();
+    filtradas.forEach((l) => {
+      const k = clave(l);
+      const g = m.get(k) || { clave: k, c: 0, b: 0, i: 0, t: 0, n: 0 };
+      g.c += l.c; g.b += l.b; g.i += l.i; g.t += l.t; g.n += 1;
+      m.set(k, g);
+    });
+    const arr = [...m.values()];
+    if (agrupar === "mes" || agrupar === "anio") arr.sort((a, b) => a.clave.localeCompare(b.clave));
+    else arr.sort((a, b) => b.t - a.t);
+    return arr;
+  }, [filtradas, agrupar]);
+
+  const totales = useMemo(
+    () => grupos.reduce((s, g) => ({ c: s.c + g.c, b: s.b + g.b, i: s.i + g.i, t: s.t + g.t, n: s.n + g.n }), { c: 0, b: 0, i: 0, t: 0, n: 0 }),
+    [grupos]
+  );
+
+  const nombreAgrupar = { mes: "Mes", anio: "Año", familia: "Familia", subfamilia: "Subfamilia", producto: "Producto" }[agrupar];
+  const num = (n) => String(Math.round(n * 100) / 100).replace(".", ",");
+
+  const descargarCSV = () => {
+    const filas = [[nombreAgrupar, "Unidades", "Base", "IVA", "Total"].join(";")];
+    grupos.forEach((g) => {
+      filas.push([`"${String(g.clave).replace(/"/g, '""')}"`, num(g.c), num(g.b), num(g.i), num(g.t)].join(";"));
+    });
+    filas.push(["TOTAL", num(totales.c), num(totales.b), num(totales.i), num(totales.t)].join(";"));
+    const blob = new Blob(["﻿" + filas.join("\r\n")], { type: "text/csv;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `ventas_gcr_${agrupar}_${desde || "inicio"}_${hasta || "fin"}.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
+
+  const ctl = { padding: "8px 10px", borderRadius: 8, border: `1px solid ${theme.border}`, fontSize: 14, color: theme.ink, background: "#fff", width: "100%", boxSizing: "border-box" };
+  const lbl = { display: "flex", flexDirection: "column", gap: 4, fontSize: 12, color: theme.inkSoft, fontWeight: 600 };
+  const MAX_FILAS = 300;
+
   const th = { textAlign: "left", padding: "8px 12px", fontSize: 12, color: theme.inkSoft, borderBottom: `1px solid ${theme.border}` };
   const td = { padding: "8px 12px", fontSize: 14, color: theme.ink, borderBottom: `1px solid ${theme.border}` };
   const boton = (activo) => ({
@@ -2823,6 +2912,127 @@ function VentasGCRView({ tenantId }) {
         <div style={{ background: "#E7F3EB", color: theme.success, padding: 12, borderRadius: 10, marginBottom: 16, fontSize: 14 }}>{resultado}</div>
       )}
 
+      {meses && meses.length > 0 && (
+        <>
+          <div style={{ background: theme.accentSoft, color: theme.ink, padding: "10px 14px", borderRadius: 10, fontSize: 13, marginBottom: 16 }}>
+            Ojo: en este histórico Academia y Proshop están incompletos y Restauración no aparece desde 2024. Los importes llevan IVA incluido en "Total".
+          </div>
+
+          <Card style={{ marginBottom: 20 }}>
+            <div style={{ fontWeight: 700, color: theme.ink, marginBottom: 12 }}>Informe de ventas</div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 12 }}>
+              <label style={lbl}>Desde
+                <select style={ctl} value={desde} onChange={(e) => setDesde(e.target.value)}>
+                  {ids.map((id) => <option key={id} value={id}>{id}</option>)}
+                </select>
+              </label>
+              <label style={lbl}>Hasta
+                <select style={ctl} value={hasta} onChange={(e) => setHasta(e.target.value)}>
+                  {ids.map((id) => <option key={id} value={id}>{id}</option>)}
+                </select>
+              </label>
+              <label style={lbl}>Familia
+                <select style={ctl} value={fFam} onChange={(e) => { setFFam(e.target.value); setFSub(""); }}>
+                  <option value="">Todas</option>
+                  {familias.map((f) => <option key={f} value={f}>{f}</option>)}
+                </select>
+              </label>
+              <label style={lbl}>Subfamilia
+                <select style={ctl} value={fSub} onChange={(e) => setFSub(e.target.value)}>
+                  <option value="">Todas</option>
+                  {subfamilias.map((s) => <option key={s} value={s}>{s}</option>)}
+                </select>
+              </label>
+              <label style={lbl}>Producto (contiene)
+                <input style={ctl} value={fProd} onChange={(e) => setFProd(e.target.value)} placeholder="Ej: greenfee, cuota…" />
+              </label>
+              <label style={lbl}>Agrupar por
+                <select style={ctl} value={agrupar} onChange={(e) => setAgrupar(e.target.value)}>
+                  <option value="mes">Mes</option>
+                  <option value="anio">Año</option>
+                  <option value="familia">Familia</option>
+                  <option value="subfamilia">Subfamilia</option>
+                  <option value="producto">Producto</option>
+                </select>
+              </label>
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12, marginTop: 18 }}>
+              {[
+                ["Total (con IVA)", fmtEUR(totales.t)],
+                ["Base imponible", fmtEUR(totales.b)],
+                ["IVA", fmtEUR(totales.i)],
+                ["Unidades", Math.round(totales.c).toLocaleString("es-ES")],
+                ["Líneas", totales.n.toLocaleString("es-ES")],
+              ].map(([t, v]) => (
+                <div key={t} style={{ background: theme.bg, border: `1px solid ${theme.border}`, borderRadius: 10, padding: "10px 12px" }}>
+                  <div style={{ fontSize: 12, color: theme.inkSoft }}>{t}</div>
+                  <div style={{ fontSize: 18, fontWeight: 700, color: theme.ink, marginTop: 2 }}>{v}</div>
+                </div>
+              ))}
+            </div>
+
+            {(agrupar === "mes" || agrupar === "anio") && grupos.length > 0 && (
+              <div style={{ height: 260, marginTop: 20 }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={grupos.map((g) => ({ nombre: g.clave, total: Math.round(g.t * 100) / 100 }))}>
+                    <CartesianGrid strokeDasharray="3 3" stroke={theme.border} />
+                    <XAxis dataKey="nombre" tick={{ fontSize: 11 }} />
+                    <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => `${Math.round(v / 1000)}k`} />
+                    <Tooltip formatter={(v) => fmtEUR(v)} />
+                    <Bar dataKey="total" fill={theme.pine} radius={[4, 4, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 20, marginBottom: 6 }}>
+              <div style={{ fontSize: 13, color: theme.inkSoft }}>
+                {grupos.length.toLocaleString("es-ES")} {grupos.length === 1 ? "grupo" : "grupos"}
+                {grupos.length > MAX_FILAS ? ` (se muestran los ${MAX_FILAS} primeros; el CSV lleva todos)` : ""}
+              </div>
+              <button onClick={descargarCSV} disabled={grupos.length === 0} style={boton(grupos.length > 0)}>Descargar CSV</button>
+            </div>
+
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                <thead>
+                  <tr>
+                    <th style={th}>{nombreAgrupar}</th>
+                    <th style={{ ...th, textAlign: "right" }}>Unidades</th>
+                    <th style={{ ...th, textAlign: "right" }}>Base</th>
+                    <th style={{ ...th, textAlign: "right" }}>IVA</th>
+                    <th style={{ ...th, textAlign: "right" }}>Total</th>
+                    <th style={{ ...th, textAlign: "right" }}>%</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {grupos.slice(0, MAX_FILAS).map((g) => (
+                    <tr key={g.clave}>
+                      <td style={td}>{g.clave}</td>
+                      <td style={{ ...td, textAlign: "right" }}>{Math.round(g.c).toLocaleString("es-ES")}</td>
+                      <td style={{ ...td, textAlign: "right" }}>{fmtEUR(g.b)}</td>
+                      <td style={{ ...td, textAlign: "right" }}>{fmtEUR(g.i)}</td>
+                      <td style={{ ...td, textAlign: "right", fontWeight: 600 }}>{fmtEUR(g.t)}</td>
+                      <td style={{ ...td, textAlign: "right", color: theme.inkSoft }}>
+                        {totales.t ? `${((g.t / totales.t) * 100).toFixed(1).replace(".", ",")} %` : "—"}
+                      </td>
+                    </tr>
+                  ))}
+                  {grupos.length === 0 && (
+                    <tr><td style={{ ...td, color: theme.inkSoft }} colSpan={6}>No hay ventas con esos filtros.</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+        </>
+      )}
+
+      <details style={{ marginTop: 8 }}>
+        <summary style={{ cursor: "pointer", fontWeight: 600, color: theme.inkSoft, padding: "8px 0", marginBottom: 12 }}>
+          Datos cargados e importación
+        </summary>
       <Card style={{ marginBottom: 20 }}>
         <div style={{ fontWeight: 700, color: theme.ink, marginBottom: 12 }}>Lo que hay guardado ahora</div>
         {cargando && <div style={{ color: theme.inkSoft }}>Leyendo…</div>}
@@ -2876,6 +3086,7 @@ function VentasGCRView({ tenantId }) {
           {progreso && <span style={{ fontSize: 14, color: theme.inkSoft }}>{progreso.hechos} de {progreso.total} meses</span>}
         </div>
       </Card>
+      </details>
     </div>
   );
 }
