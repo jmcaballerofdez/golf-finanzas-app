@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { db, auth, storage, leerTicketIA } from "./firebase";
-import { ref, uploadBytes } from "firebase/storage";
+import { ref, uploadBytes, getDownloadURL, getBlob } from "firebase/storage";
 import {
   collection,
   getDocs,
@@ -80,6 +80,13 @@ const fmtEUR = (n) =>
   new Intl.NumberFormat("es-ES", { style: "currency", currency: "EUR" }).format(
     Number(n || 0)
   );
+
+// Entidad de una transacción: la que tenga guardada; si no la tiene, lo de Academia y Proshop es de JMCF
+// y el resto del club. (Se puede cambiar fila a fila desde Transacciones.)
+const normTx = (s) => String(s || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+const entidadDeTx = (t) =>
+  t.entidad || ((t.origen === "academia" || /academia|pro ?shop/.test(normTx(`${t.category} ${t.activity}`))) ? "jmcf" : "club");
+const ENTIDADES_FIN = [["club", "Golf Ciudad Real (club)"], ["jmcf", "JMCF · Pro Shop y Academia"]];
 
 const fmtDate = (isoOrTimestamp) => {
   if (!isoOrTimestamp) return "—";
@@ -288,6 +295,7 @@ function Sidebar({ active, setActive, onLogout, userEmail, esSuper }) {
     { id: "resumen", label: "Resumen", icon: LayoutDashboard },
     { id: "transacciones", label: "Transacciones", icon: Receipt },
     { id: "informes", label: "Informes", icon: FileText },
+    { id: "gestoria", label: "Gestoría", icon: Download },
     { id: "ventas_gcr", label: "Ventas", icon: ShoppingCart },
     { id: "presupuestos", label: "Presupuestos", icon: Wallet },
     { id: "metas", label: "Metas", icon: Target },
@@ -916,16 +924,38 @@ function extraerDatosTicket(texto) {
   };
 }
 
-function EscanearTicketModal({ onClose, onDetectado }) {
+function EscanearTicketModal({ onClose, onDetectado, tenantId }) {
   const [imagen, setImagen] = useState(null);
   const [nombrePdf, setNombrePdf] = useState(null);
   const [procesando, setProcesando] = useState(false);
   const [error, setError] = useState("");
 
+  // Guarda el archivo original en Storage y devuelve su ruta para enlazarlo a la transacción.
+  // Si falla, devuelve el motivo (se enseña en el formulario) en vez de callarlo.
+  const guardarArchivo = async (file, porDefecto) => {
+    try {
+      if (!tenantId) throw new Error("no se conoce el club");
+      const uid = auth.currentUser?.uid;
+      if (!uid) throw new Error("no hay sesión iniciada");
+      const nombre = file.name || porDefecto;
+      const limpio = String(nombre).replace(/[^\w.\-]+/g, "_");
+      const path = `clubes/${tenantId}/finanzas/tickets/${uid}/${Date.now()}_${limpio}`;
+      await uploadBytes(ref(storage, path), file, file.type ? { contentType: file.type } : undefined);
+      return { ticket: { path, nombre, tipo: file.type || "", tam: file.size || 0 } };
+    } catch (e) {
+      console.warn("No se pudo guardar el archivo en Storage:", e);
+      return { ticketError: e?.message || String(e) };
+    }
+  };
+
+  const hoy = () => new Date().toISOString().slice(0, 10);
+
   const procesarImagen = async (file) => {
     setError("");
     setImagen(URL.createObjectURL(file));
     setProcesando(true);
+    // Primero se guarda el archivo (aunque luego falle la lectura automática).
+    const guardado = await guardarArchivo(file, "ticket.jpg");
     try {
       const imageBase64 = await new Promise((resolve, reject) => {
         const reader = new FileReader();
@@ -934,46 +964,29 @@ function EscanearTicketModal({ onClose, onDetectado }) {
         reader.readAsDataURL(file);
       });
       const { data } = await leerTicketIA({ imageBase64, mediaType: file.type || "image/jpeg" });
-try {
-        const clubId = tenantId;
-        const nombreArchivo = `${Date.now()}_${file.name || "ticket.jpg"}`;
-        const storageRef = ref(storage, `clubes/${clubId}/finanzas/tickets/${auth.currentUser?.uid}/${nombreArchivo}`);
-        await uploadBytes(storageRef, file);
-      } catch (uploadErr) {
-        console.warn("No se pudo guardar el archivo en Storage:", uploadErr);
-      }
-      const detectado = {
+      onDetectado({
         amount: data?.importeTotal != null ? String(data.importeTotal) : "",
-        date: data?.fecha || new Date().toISOString().slice(0, 10),
+        date: data?.fecha || hoy(),
         description: (data?.descripcion || data?.proveedor || "").slice(0, 60),
-      };
-      onDetectado(detectado);
+        ...guardado,
+      });
     } catch (e) {
       console.warn("Error leyendo imagen con IA:", e);
-      setError("No se ha podido leer el ticket automáticamente. Rellena los datos a mano.");
-      setProcesando(false);
+      onDetectado({ amount: "", date: hoy(), description: "", aviso: "No se ha podido leer el ticket automáticamente. Rellena los datos a mano.", ...guardado });
     }
   };
 
   // Lee el texto "de verdad" incrustado en un PDF digital (facturas
   // generadas por ordenador). Si el PDF es un escaneo sin texto
-  // (foto metida dentro de un PDF), esto no encuentra nada — en ese
-  // caso lo mejor es hacerle una foto en vez de subir el PDF.
+  // (foto metida dentro de un PDF), el archivo se guarda igualmente y los datos se rellenan a mano.
   const procesarPdf = async (file) => {
     setError("");
     setNombrePdf(file.name);
     setProcesando(true);
+    const guardado = await guardarArchivo(file, "factura.pdf");
     try {
       const pdfjsLib = await import("pdfjs-dist/build/pdf");
-try {
-        const clubId = tenantId;
-        const nombreArchivo = `${Date.now()}_${file.name || "factura.pdf"}`;
-        const storageRef = ref(storage, `clubes/${clubId}/finanzas/tickets/${auth.currentUser?.uid}/${nombreArchivo}`);
-        await uploadBytes(storageRef, file);
-      } catch (uploadErr) {
-        console.warn("No se pudo guardar el PDF en Storage:", uploadErr);
-      }
-     pdfjsLib.GlobalWorkerOptions.workerSrc = new URL("pdfjs-dist/build/pdf.worker.min.mjs", import.meta.url).toString();
+      pdfjsLib.GlobalWorkerOptions.workerSrc = new URL("pdfjs-dist/build/pdf.worker.min.mjs", import.meta.url).toString();
       const buffer = await file.arrayBuffer();
       const pdf = await pdfjsLib.getDocument({ data: buffer }).promise;
       let texto = "";
@@ -983,16 +996,13 @@ try {
         texto += contenido.items.map((it) => it.str).join(" ") + "\n";
       }
       if (texto.trim().length < 15) {
-        setError("Este PDF parece un escaneo (sin texto real dentro). Prueba a subir una foto o imagen de la factura en vez del PDF.");
-        setProcesando(false);
+        onDetectado({ amount: "", date: hoy(), description: "", aviso: "Este PDF parece un escaneo (sin texto real dentro). Rellena los datos a mano o prueba a subir una foto.", ...guardado });
         return;
       }
-      const detectado = extraerDatosTicket(texto);
-      onDetectado(detectado);
+      onDetectado({ ...extraerDatosTicket(texto), ...guardado });
     } catch (e) {
       console.warn("Error leyendo PDF:", e);
-      setError("No se ha podido leer el PDF automáticamente. Rellena los datos a mano.");
-      setProcesando(false);
+      onDetectado({ amount: "", date: hoy(), description: "", aviso: "No se ha podido leer el PDF automáticamente. Rellena los datos a mano.", ...guardado });
     }
   };
 
@@ -1301,7 +1311,7 @@ function ImportarExcelModal({ onClose, onAdd, categorias }) {
   );
 }
 
-function TransaccionForm({ onClose, onSave, initial, categorias }) {
+function TransaccionForm({ onClose, onSave, initial, categorias, entidadInicial }) {
   const [form, setForm] = useState({
     type: "expense",
     category: "",
@@ -1313,6 +1323,7 @@ function TransaccionForm({ onClose, onSave, initial, categorias }) {
     iva_type: "",
     base_amount: "",
     irpf_deductible: "no",
+    entidad: initial?.entidad || entidadInicial || "club",
   });
 
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
@@ -1322,6 +1333,8 @@ function TransaccionForm({ onClose, onSave, initial, categorias }) {
     if (!form.category || !form.amount) return;
     onSave({
       ...form,
+      ticket_path: initial?.ticket?.path || null,
+      ticket_nombre: initial?.ticket?.nombre || null,
       amount: Number(form.amount).toFixed(2),
       base_amount: form.base_amount ? Number(form.base_amount).toFixed(2) : null,
       iva_amount:
@@ -1377,6 +1390,19 @@ function TransaccionForm({ onClose, onSave, initial, categorias }) {
             Datos detectados del ticket — revísalos antes de guardar.
           </div>
         )}
+        {initial?.aviso && (
+          <div style={{ background: "#FBEAE5", color: theme.danger, borderRadius: 8, padding: "8px 12px", fontSize: 12.5, marginBottom: 10 }}>{initial.aviso}</div>
+        )}
+        {initial?.ticket && (
+          <div style={{ background: "#E7F3EB", color: theme.success, borderRadius: 8, padding: "8px 12px", fontSize: 12.5, marginBottom: 10 }}>
+            📎 Archivo guardado: {initial.ticket.nombre}. Quedará enlazado a esta transacción.
+          </div>
+        )}
+        {initial?.ticketError && (
+          <div style={{ background: "#FBEAE5", color: theme.danger, borderRadius: 8, padding: "8px 12px", fontSize: 12.5, marginBottom: 10 }}>
+            No se ha podido guardar el archivo ({initial.ticketError}). Puedes guardar la transacción igualmente, pero no tendrá archivo enlazado.
+          </div>
+        )}
 
         <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
           {["expense", "income"].map((t) => (
@@ -1429,6 +1455,11 @@ function TransaccionForm({ onClose, onSave, initial, categorias }) {
         <label style={label}>Actividad (opcional: club / mantenimiento...)</label>
         <input style={inputStyle} value={form.activity} onChange={set("activity")} />
 
+        <label style={label}>Se guarda en</label>
+        <select style={inputStyle} value={form.entidad} onChange={set("entidad")}>
+          {ENTIDADES_FIN.map(([id, n]) => <option key={id} value={id}>{n}</option>)}
+        </select>
+
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
           <div>
             <label style={label}>Base imponible (opcional)</label>
@@ -1461,11 +1492,20 @@ function TransaccionForm({ onClose, onSave, initial, categorias }) {
   );
 }
 
-function TransaccionesView({ transacciones, onAdd, categorias }) {
+function TransaccionesView({ transacciones, onAdd, categorias, tenantId, entidad, onCambiarEntidad }) {
   const [showForm, setShowForm] = useState(false);
   const [showScan, setShowScan] = useState(false);
   const [showImportar, setShowImportar] = useState(false);
   const [datosDetectados, setDatosDetectados] = useState(null);
+  const [errorTicket, setErrorTicket] = useState("");
+  const abrirTicket = async (t) => {
+    setErrorTicket("");
+    try {
+      window.open(await getDownloadURL(ref(storage, t.ticket_path)), "_blank", "noopener");
+    } catch (e) {
+      setErrorTicket("No se ha podido abrir el archivo: " + (e?.message || e));
+    }
+  };
   const ordenadas = [...transacciones].sort(
     (a, b) => new Date(b.date) - new Date(a.date)
   );
@@ -1529,11 +1569,14 @@ function TransaccionesView({ transacciones, onAdd, categorias }) {
         </div>
       </div>
 
+      {errorTicket && (
+        <div style={{ background: "#FBEAE5", color: theme.danger, padding: 10, borderRadius: 10, fontSize: 13, marginBottom: 12 }}>{errorTicket}</div>
+      )}
       <Card style={{ padding: 0 }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
             <tr style={{ borderBottom: `1px solid ${theme.border}` }}>
-              {["Fecha", "Categoría", "Descripción", "Tipo", "Importe"].map((h) => (
+              {["Fecha", "Categoría", "Descripción", "Tipo", "Importe", "Entidad", "Archivo"].map((h) => (
                 <th
                   key={h}
                   style={{
@@ -1572,6 +1615,31 @@ function TransaccionesView({ transacciones, onAdd, categorias }) {
                 >
                   {t.type === "income" ? "+" : "-"} {fmtEUR(t.amount)}
                 </td>
+                <td style={{ padding: "12px 16px", fontSize: 13 }}>
+                  {String(t.id).startsWith("academia-") ? (
+                    <span style={{ color: theme.inkSoft }}>JMCF</span>
+                  ) : (
+                    <select
+                      value={entidadDeTx(t)}
+                      onChange={(e) => onCambiarEntidad && onCambiarEntidad(t.id, e.target.value)}
+                      style={{ padding: "4px 6px", borderRadius: 6, border: `1px solid ${theme.border}`, fontSize: 12, background: "#fff" }}
+                    >
+                      <option value="club">Club</option>
+                      <option value="jmcf">JMCF</option>
+                    </select>
+                  )}
+                </td>
+                <td style={{ padding: "12px 16px", fontSize: 13 }}>
+                  {t.ticket_path ? (
+                    <button
+                      onClick={() => abrirTicket(t)}
+                      title={t.ticket_nombre || "Ver archivo"}
+                      style={{ border: `1px solid ${theme.border}`, background: "#fff", borderRadius: 6, padding: "3px 8px", cursor: "pointer", fontSize: 12 }}
+                    >📎 Ver</button>
+                  ) : (
+                    <span style={{ color: theme.border }}>—</span>
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>
@@ -1580,9 +1648,10 @@ function TransaccionesView({ transacciones, onAdd, categorias }) {
 
       {showScan && (
         <EscanearTicketModal
+          tenantId={tenantId}
           onClose={() => setShowScan(false)}
           onDetectado={(datos) => {
-            setDatosDetectados(datos);
+            setDatosDetectados({ ...datos, entidad: "jmcf" }); // los tickets escaneados van siempre a JMCF
             setShowScan(false);
             setShowForm(true);
           }}
@@ -1600,6 +1669,7 @@ function TransaccionesView({ transacciones, onAdd, categorias }) {
       {showForm && (
         <TransaccionForm
           initial={datosDetectados}
+          entidadInicial={entidad}
           categorias={categorias}
           onClose={() => { setShowForm(false); setDatosDetectados(null); }}
           onSave={(data) => {
@@ -2712,6 +2782,358 @@ function MisTareasVista({ db, F, ink = "#f3f6f4", soft = "#c9d3cc" }) {
   );
 }
 
+/* ================================ GESTORÍA ================================ */
+// Reúne las transacciones de un periodo (por ejemplo, un trimestre) con los archivos de sus tickets y facturas,
+// para descargarlos y enviarlos a la gestoría: un Excel resumen y, si se quiere, un ZIP con el Excel y todos los archivos.
+
+// ---- ZIP sin compresión (método "stored"), sin dependencias. Las fotos y PDF ya vienen comprimidos. ----
+const gzCrcTabla = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+const gzCrc32 = (u8) => {
+  let c = 0xffffffff;
+  for (let i = 0; i < u8.length; i++) c = gzCrcTabla[(c ^ u8[i]) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+};
+
+function gzCrearZip(archivos) {
+  // archivos: [{ nombre, datos: Uint8Array }]
+  const enc = new TextEncoder();
+  const partes = [];
+  const central = [];
+  let offset = 0;
+  const ahora = new Date();
+  const hora = (ahora.getHours() << 11) | (ahora.getMinutes() << 5) | (ahora.getSeconds() >> 1);
+  const fecha = ((ahora.getFullYear() - 1980) << 9) | ((ahora.getMonth() + 1) << 5) | ahora.getDate();
+  archivos.forEach((a) => {
+    const nombre = enc.encode(a.nombre);
+    const crc = gzCrc32(a.datos);
+    const tam = a.datos.length;
+    const loc = new DataView(new ArrayBuffer(30));
+    loc.setUint32(0, 0x04034b50, true); loc.setUint16(4, 20, true); loc.setUint16(6, 0x0800, true); loc.setUint16(8, 0, true);
+    loc.setUint16(10, hora, true); loc.setUint16(12, fecha, true); loc.setUint32(14, crc, true);
+    loc.setUint32(18, tam, true); loc.setUint32(22, tam, true); loc.setUint16(26, nombre.length, true); loc.setUint16(28, 0, true);
+    partes.push(new Uint8Array(loc.buffer), nombre, a.datos);
+    const cen = new DataView(new ArrayBuffer(46));
+    cen.setUint32(0, 0x02014b50, true); cen.setUint16(4, 20, true); cen.setUint16(6, 20, true); cen.setUint16(8, 0x0800, true);
+    cen.setUint16(10, 0, true); cen.setUint16(12, hora, true); cen.setUint16(14, fecha, true); cen.setUint32(16, crc, true);
+    cen.setUint32(20, tam, true); cen.setUint32(24, tam, true); cen.setUint16(28, nombre.length, true);
+    cen.setUint16(30, 0, true); cen.setUint16(32, 0, true); cen.setUint16(34, 0, true); cen.setUint16(36, 0, true);
+    cen.setUint32(38, 0, true); cen.setUint32(42, offset, true);
+    central.push(new Uint8Array(cen.buffer), nombre);
+    offset += 30 + nombre.length + tam;
+  });
+  const tamCentral = central.reduce((s, x) => s + x.length, 0);
+  const fin = new DataView(new ArrayBuffer(22));
+  fin.setUint32(0, 0x06054b50, true); fin.setUint16(4, 0, true); fin.setUint16(6, 0, true);
+  fin.setUint16(8, archivos.length, true); fin.setUint16(10, archivos.length, true);
+  fin.setUint32(12, tamCentral, true); fin.setUint32(16, offset, true); fin.setUint16(20, 0, true);
+  return new Blob([...partes, ...central, new Uint8Array(fin.buffer)], { type: "application/zip" });
+}
+
+// ---- Periodos habituales para la gestoría ----
+const gzIso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
+function gzRangos(hoy) {
+  const y = hoy.getFullYear();
+  const m = hoy.getMonth();
+  const q = Math.floor(m / 3) * 3;
+  const par = (a, b) => [gzIso(a), gzIso(b)];
+  const trim = Math.floor(m / 3) + 1;
+  const tAnt = q === 0 ? 4 : trim - 1;
+  const yAnt = q === 0 ? y - 1 : y;
+  return {
+    trimant: [`${tAnt}.º trimestre ${yAnt}`, ...par(new Date(y, q - 3, 1), new Date(y, q, 0))],
+    trim: [`${trim}.º trimestre ${y} (en curso)`, ...par(new Date(y, q, 1), new Date(y, q + 3, 0))],
+    mesant: ["Mes anterior", ...par(new Date(y, m - 1, 1), new Date(y, m, 0))],
+    mes: ["Este mes", ...par(new Date(y, m, 1), new Date(y, m + 1, 0))],
+    anioant: [`Año ${y - 1}`, ...par(new Date(y - 1, 0, 1), new Date(y - 1, 11, 31))],
+    anio: [`Año ${y} (en curso)`, ...par(new Date(y, 0, 1), new Date(y, 11, 31))],
+  };
+}
+
+const gzSlug = (s, max = 40) =>
+  String(s || "")
+    .normalize("NFD").replace(/[̀-ͯ]/g, "")
+    .replace(/[^A-Za-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, max) || "sin_descripcion";
+
+const gzExt = (t) => {
+  const del = (s) => { const m = String(s || "").match(/\.([A-Za-z0-9]{2,5})$/); return m ? m[1].toLowerCase() : ""; };
+  return del(t.ticket_nombre) || del(t.ticket_path) || "bin";
+};
+
+// Nombre que llevará cada archivo dentro del ZIP: fecha_descripción_importe, con un número para que no se repitan.
+function gzNombresArchivo(txs) {
+  const usados = new Set();
+  const r = {};
+  txs.forEach((t) => {
+    if (!t.ticket_path) return;
+    const d = gzIso(aFecha(t.date));
+    let base = `${d}_${gzSlug(t.description || t.category)}_${Number(t.amount || 0).toFixed(2).replace(".", ",")}EUR`;
+    let nombre = `${base}.${gzExt(t)}`;
+    let n = 2;
+    while (usados.has(nombre)) { nombre = `${base}_${n}.${gzExt(t)}`; n += 1; }
+    usados.add(nombre);
+    r[t.id] = nombre;
+  });
+  return r;
+}
+
+// Excel resumen para la gestoría (una fila por transacción + totales).
+async function gzExcel(txs, nombres, titulo) {
+  const ExcelJS = await import("exceljs");
+  const Libro = ExcelJS.Workbook || ExcelJS.default?.Workbook;
+  const wb = new Libro();
+  const ws = wb.addWorksheet("Gestoría");
+  ws.columns = [
+    { header: "Fecha", key: "f", width: 12 },
+    { header: "Tipo", key: "t", width: 10 },
+    { header: "Categoría", key: "c", width: 26 },
+    { header: "Subcategoría", key: "s", width: 22 },
+    { header: "Descripción", key: "d", width: 44 },
+    { header: "Base imponible", key: "b", width: 15 },
+    { header: "IVA %", key: "p", width: 8 },
+    { header: "IVA €", key: "i", width: 12 },
+    { header: "Total", key: "n", width: 14 },
+    { header: "Archivo", key: "a", width: 52 },
+  ];
+  ws.getRow(1).font = { bold: true };
+  ws.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF4ECDA" } };
+  let gastos = 0, ingresos = 0;
+  txs.forEach((t) => {
+    const total = Number(t.amount || 0);
+    const base = t.base_amount !== null && t.base_amount !== undefined && t.base_amount !== "" ? Number(t.base_amount) : null;
+    const iva = base !== null ? (t.iva_amount !== null && t.iva_amount !== undefined && t.iva_amount !== "" ? Number(t.iva_amount) : Math.round((total - base) * 100) / 100) : null;
+    if (t.type === "income") ingresos += total; else gastos += total;
+    ws.addRow({
+      f: aFecha(t.date), t: t.type === "income" ? "Ingreso" : "Gasto", c: t.category || "", s: t.subcategory || "", d: t.description || "",
+      b: base, p: t.iva_type !== "" && t.iva_type !== null && t.iva_type !== undefined ? Number(String(t.iva_type).replace("%", "")) : null,
+      i: iva, n: total, a: nombres[t.id] ? `archivos/${nombres[t.id]}` : "",
+    });
+  });
+  ws.getColumn("f").numFmt = "dd/mm/yyyy";
+  ["b", "i", "n"].forEach((k) => { ws.getColumn(k).numFmt = "#,##0.00"; });
+  ws.addRow({});
+  const rg = ws.addRow({ d: "TOTAL GASTOS", n: Math.round(gastos * 100) / 100 });
+  const ri = ws.addRow({ d: "TOTAL INGRESOS", n: Math.round(ingresos * 100) / 100 });
+  [rg, ri].forEach((r) => { r.font = { bold: true }; });
+  ws.addRow({});
+  ws.addRow({ d: titulo });
+  ws.views = [{ state: "frozen", ySplit: 1 }];
+  return new Uint8Array(await wb.xlsx.writeBuffer());
+}
+
+function GestoriaView({ transacciones, entidad }) {
+  const rangos = useMemo(() => gzRangos(new Date()), []);
+  const [preset, setPreset] = useState("trimant");
+  const [desde, setDesde] = useState(rangos.trimant[1]);
+  const [hasta, setHasta] = useState(rangos.trimant[2]);
+  const [tipo, setTipo] = useState("todo");
+  const [soloArchivo, setSoloArchivo] = useState(false);
+  const [progreso, setProgreso] = useState(null); // { hechos, total, fase }
+  const [aviso, setAviso] = useState("");
+  const [error, setError] = useState("");
+
+  const nombreEnt = ENTIDADES_FIN.find((e) => e[0] === entidad)?.[1] || entidad;
+
+  const elegir = (id) => {
+    setPreset(id);
+    setDesde(rangos[id][1]);
+    setHasta(rangos[id][2]);
+  };
+
+  const filas = useMemo(
+    () =>
+      transacciones
+        .filter((t) => {
+          const d = gzIso(aFecha(t.date));
+          return d >= desde && d <= hasta && (tipo === "todo" || (tipo === "gasto" ? t.type === "expense" : t.type === "income")) && (!soloArchivo || t.ticket_path);
+        })
+        .sort((a, b) => aFecha(a.date) - aFecha(b.date)),
+    [transacciones, desde, hasta, tipo, soloArchivo]
+  );
+  const conArchivo = filas.filter((t) => t.ticket_path);
+  const totGastos = filas.filter((t) => t.type !== "income").reduce((s, t) => s + Number(t.amount || 0), 0);
+  const totIngresos = filas.filter((t) => t.type === "income").reduce((s, t) => s + Number(t.amount || 0), 0);
+
+  const bajar = (blob, nombre) => {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = nombre;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  };
+  const base = `gestoria_${entidad}_${desde}_${hasta}`;
+  const titulo = `${nombreEnt} · ${desde} a ${hasta}`;
+  const XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+
+  const descargarExcel = async () => {
+    setError(""); setAviso("");
+    try {
+      const datos = await gzExcel(filas, gzNombresArchivo(filas), titulo);
+      bajar(new Blob([datos], { type: XLSX_MIME }), `${base}.xlsx`);
+    } catch (e) {
+      setError("No se ha podido crear el Excel: " + (e?.message || e));
+    }
+  };
+
+  const descargarZip = async () => {
+    setError(""); setAviso("");
+    const nombres = gzNombresArchivo(filas);
+    const archivos = [];
+    const fallidos = [];
+    let ultimoError = "";
+    setProgreso({ hechos: 0, total: conArchivo.length, fase: "Descargando archivos" });
+    for (let i = 0; i < conArchivo.length; i++) {
+      const t = conArchivo[i];
+      try {
+        const blob = await getBlob(ref(storage, t.ticket_path));
+        archivos.push({ nombre: `archivos/${nombres[t.id]}`, datos: new Uint8Array(await blob.arrayBuffer()) });
+      } catch (e) {
+        fallidos.push(t);
+        ultimoError = e?.message || String(e);
+        delete nombres[t.id];
+      }
+      setProgreso({ hechos: i + 1, total: conArchivo.length, fase: "Descargando archivos" });
+    }
+    if (conArchivo.length > 0 && archivos.length === 0) {
+      setProgreso(null);
+      setError(
+        "No se ha podido descargar ningún archivo desde la web (" + ultimoError + "). Lo más probable es que falte permitir las descargas desde esta web en el almacenamiento (CORS). Dímelo y te guío paso a paso."
+      );
+      return;
+    }
+    try {
+      setProgreso({ hechos: conArchivo.length, total: conArchivo.length, fase: "Creando el ZIP" });
+      const excel = await gzExcel(filas, nombres, titulo);
+      archivos.unshift({ nombre: `${base}.xlsx`, datos: excel });
+      bajar(gzCrearZip(archivos), `${base}.zip`);
+      setAviso(
+        `ZIP descargado: Excel resumen + ${archivos.length - 1} ${archivos.length - 1 === 1 ? "archivo" : "archivos"}.` +
+          (fallidos.length ? ` No se han podido incluir ${fallidos.length} (${fallidos.map((t) => t.description || t.category).slice(0, 5).join(", ")}).` : "")
+      );
+    } catch (e) {
+      setError("No se ha podido crear el ZIP: " + (e?.message || e));
+    }
+    setProgreso(null);
+  };
+
+  const ctl = { padding: "8px 10px", borderRadius: 8, border: `1px solid ${theme.border}`, fontSize: 14, color: theme.ink, background: "#fff", width: "100%", boxSizing: "border-box" };
+  const lbl = { display: "flex", flexDirection: "column", gap: 4, fontSize: 12, color: theme.inkSoft, fontWeight: 600 };
+  const th = { textAlign: "left", padding: "8px 12px", fontSize: 12, color: theme.inkSoft, borderBottom: `1px solid ${theme.border}` };
+  const td = { padding: "8px 12px", fontSize: 13, color: theme.ink, borderBottom: `1px solid ${theme.border}` };
+  const chip = (activo) => ({
+    padding: "6px 12px", borderRadius: 999, fontSize: 13, fontWeight: 600, cursor: "pointer",
+    border: `1px solid ${activo ? theme.pine : theme.border}`, background: activo ? theme.pine : "#fff", color: activo ? "#fff" : theme.ink,
+  });
+  const boton = (activo, principal) => ({
+    padding: "10px 16px", borderRadius: 10, border: principal ? "none" : `1px solid ${activo ? theme.pine : theme.border}`, fontWeight: 600, fontSize: 14,
+    background: principal ? (activo ? theme.pine : theme.border) : "#fff", color: principal ? (activo ? "#fff" : theme.inkSoft) : (activo ? theme.pine : theme.inkSoft),
+    cursor: activo ? "pointer" : "not-allowed",
+  });
+  const MAX = 300;
+
+  return (
+    <div style={{ maxWidth: 1000 }}>
+      <div style={{ fontWeight: 700, fontSize: 18, color: theme.ink }}>Gestoría</div>
+      <p style={{ color: theme.inkSoft, marginTop: 4, fontSize: 14 }}>
+        Prepara el Excel resumen y los archivos de tickets y facturas de {nombreEnt} para enviarlos a la gestoría.
+      </p>
+
+      {error && <div style={{ background: "#FBEAE5", color: theme.danger, padding: 12, borderRadius: 10, marginBottom: 14, fontSize: 14 }}>{error}</div>}
+      {aviso && <div style={{ background: "#E7F3EB", color: theme.success, padding: 12, borderRadius: 10, marginBottom: 14, fontSize: 14 }}>{aviso}</div>}
+
+      <Card style={{ marginBottom: 16 }}>
+        <div style={{ fontWeight: 700, color: theme.ink, marginBottom: 10 }}>Periodo</div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
+          {Object.entries(rangos).map(([id, [nombre]]) => (
+            <button key={id} onClick={() => elegir(id)} style={chip(preset === id)}>{nombre}</button>
+          ))}
+          <button onClick={() => setPreset("custom")} style={chip(preset === "custom")}>Personalizado</button>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 12 }}>
+          <label style={lbl}>Desde
+            <input type="date" style={ctl} value={desde} onChange={(e) => { setDesde(e.target.value); setPreset("custom"); }} />
+          </label>
+          <label style={lbl}>Hasta
+            <input type="date" style={ctl} value={hasta} onChange={(e) => { setHasta(e.target.value); setPreset("custom"); }} />
+          </label>
+          <label style={lbl}>Incluir
+            <select style={ctl} value={tipo} onChange={(e) => setTipo(e.target.value)}>
+              <option value="todo">Gastos e ingresos</option>
+              <option value="gasto">Solo gastos</option>
+              <option value="ingreso">Solo ingresos</option>
+            </select>
+          </label>
+          <label style={{ ...lbl, flexDirection: "row", alignItems: "center", gap: 8, paddingTop: 18 }}>
+            <input type="checkbox" checked={soloArchivo} onChange={(e) => setSoloArchivo(e.target.checked)} />
+            Solo los que tienen archivo
+          </label>
+        </div>
+      </Card>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 12, marginBottom: 16 }}>
+        {[
+          ["Movimientos", filas.length.toLocaleString("es-ES")],
+          ["Con archivo", `${conArchivo.length} de ${filas.length}`],
+          ["Total gastos", fmtEUR(totGastos)],
+          ["Total ingresos", fmtEUR(totIngresos)],
+        ].map(([t, v]) => (
+          <div key={t} style={{ background: theme.surface, border: `1px solid ${theme.border}`, borderRadius: 10, padding: "10px 12px" }}>
+            <div style={{ fontSize: 12, color: theme.inkSoft }}>{t}</div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: theme.ink, marginTop: 2 }}>{v}</div>
+          </div>
+        ))}
+      </div>
+
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 16 }}>
+        <button onClick={descargarExcel} disabled={filas.length === 0 || !!progreso} style={boton(filas.length > 0 && !progreso, false)}>Descargar Excel</button>
+        <button onClick={descargarZip} disabled={filas.length === 0 || !!progreso} style={boton(filas.length > 0 && !progreso, true)}>
+          {conArchivo.length > 0 ? `Descargar ZIP (Excel + ${conArchivo.length} archivos)` : "Descargar ZIP (solo Excel)"}
+        </button>
+        {progreso && <span style={{ fontSize: 14, color: theme.inkSoft }}>{progreso.fase}: {progreso.hechos} de {progreso.total}</span>}
+      </div>
+
+      <Card style={{ padding: 0 }}>
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr>
+                <th style={th}>Fecha</th>
+                <th style={th}>Descripción</th>
+                <th style={th}>Categoría</th>
+                <th style={th}>Tipo</th>
+                <th style={{ ...th, textAlign: "right" }}>Total</th>
+                <th style={th}>Archivo</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filas.slice(0, MAX).map((t) => (
+                <tr key={t.id}>
+                  <td style={td}>{fmtDate(t.date)}</td>
+                  <td style={td}>{t.description || "—"}</td>
+                  <td style={{ ...td, color: theme.inkSoft }}>{t.category}</td>
+                  <td style={td}>{t.type === "income" ? "Ingreso" : "Gasto"}</td>
+                  <td style={{ ...td, textAlign: "right", fontWeight: 600, color: t.type === "income" ? theme.success : theme.danger }}>{fmtEUR(t.amount)}</td>
+                  <td style={td}>{t.ticket_path ? "📎 Sí" : <span style={{ color: theme.inkSoft }}>—</span>}</td>
+                </tr>
+              ))}
+              {filas.length === 0 && <tr><td style={{ ...td, color: theme.inkSoft }} colSpan={6}>No hay movimientos en ese periodo.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+        {filas.length > MAX && <div style={{ padding: 10, fontSize: 12, color: theme.inkSoft }}>Se muestran los {MAX} primeros; el Excel y el ZIP llevan todos.</div>}
+      </Card>
+    </div>
+  );
+}
+
 /* ============================ VENTAS GCR (histórico) ============================ */
 // Histórico de ventas del club (TPV). Un documento por mes en
 // clubes/{tenant}/ventas_gcr, con todas las líneas del mes dentro.
@@ -3740,6 +4162,13 @@ function App() {
   const [tareas, setTareas] = useState([]);
   const [ventasProshop, setVentasProshop] = useState([]);
   const [categorias, setCategorias] = useState(null); // null = aún no cargado
+  const [entidad, setEntidad] = useState(() => {
+    try { return localStorage.getItem("finanzas_entidad") === "jmcf" ? "jmcf" : "club"; } catch (e) { return "club"; }
+  });
+  const cambiarEntidad = (e) => {
+    setEntidad(e);
+    try { localStorage.setItem("finanzas_entidad", e); } catch (err) { /* sin almacenamiento: no pasa nada */ }
+  };
 
   
     // Suscripciones en vivo a Firestore
@@ -3796,11 +4225,26 @@ function App() {
     .filter((t) => t.amount > 0 && !isNaN(new Date(t.date))), [ingresosAcademia]);
   const todasTransacciones = useMemo(() => [...transacciones, ...transaccionesAcademia], [transacciones, transaccionesAcademia]);
 
+  // Lo que se ve en Resumen, Transacciones, Informes, Presupuestos y Metas depende de la entidad elegida.
+  const transaccionesVista = useMemo(() => todasTransacciones.filter((t) => entidadDeTx(t) === entidad), [todasTransacciones, entidad]);
+  const ventasProshopVista = entidad === "jmcf" ? ventasProshop : []; // el Proshop es de JMCF
+  const presupuestosVista = useMemo(() => presupuestos.filter((p) => (p.entidad || "club") === entidad), [presupuestos, entidad]);
+  const metasVista = useMemo(() => metas.filter((m) => (m.entidad || "club") === entidad), [metas, entidad]);
+
   const handleAddTransaccion = async (data) => {
     await addDoc(collection(db, `clubes/${tenantId}/finanzas_transacciones`), {
       ...data,
+      entidad: data.entidad || entidad,
       created_at: serverTimestamp(),
     });
+  };
+
+  const handleCambiarEntidad = async (id, nueva) => {
+    try {
+      await updateDoc(doc(db, `clubes/${tenantId}/finanzas_transacciones`, id), { entidad: nueva });
+    } catch (e) {
+      console.warn("No se pudo cambiar la entidad:", e);
+    }
   };
 
   const handleUpdateTareaStatus = async (id, status) => {
@@ -3842,27 +4286,44 @@ function App() {
         {active === "mi_tareas" && role === "superadmin" && <MisTareasVista db={db} F={MI_AGENDA_F} ink={theme.ink} soft={theme.inkSoft} />}
         {active === "diario" && role === "superadmin" && <DiarioVista db={db} F={MI_AGENDA_F} area="Finanzas" ink={theme.ink} soft={theme.inkSoft} />}
         {active === "mi_agenda" && role === "superadmin" && <MiAgendaVista db={db} F={MI_AGENDA_F} ink={theme.ink} soft={theme.inkSoft} />}
+        {["resumen", "transacciones", "informes", "gestoria", "presupuestos", "metas"].includes(active) && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
+            <span style={{ fontSize: 12, color: theme.inkSoft, fontWeight: 600 }}>Finanzas de:</span>
+            {ENTIDADES_FIN.map(([id, nombre]) => (
+              <button
+                key={id}
+                onClick={() => cambiarEntidad(id)}
+                style={{
+                  padding: "6px 12px", borderRadius: 999, fontSize: 13, fontWeight: 600, cursor: "pointer",
+                  border: `1px solid ${entidad === id ? theme.pine : theme.border}`,
+                  background: entidad === id ? theme.pine : "#fff", color: entidad === id ? "#fff" : theme.ink,
+                }}
+              >{nombre}</button>
+            ))}
+          </div>
+        )}
         {active === "resumen" && (
           <ResumenView
-            transacciones={todasTransacciones}
+            transacciones={transaccionesVista}
             presupuestos={presupuestos}
             metas={metas}
-            ventasProshop={ventasProshop}
+            ventasProshop={ventasProshopVista}
             categorias={categorias || CATEGORIAS_DEFECTO}
             onGuardarCategorias={handleGuardarCategorias}
           />
         )}
         {active === "transacciones" && (
-          <TransaccionesView transacciones={todasTransacciones} onAdd={handleAddTransaccion} categorias={categorias || CATEGORIAS_DEFECTO} />
+          <TransaccionesView transacciones={transaccionesVista} onAdd={handleAddTransaccion} categorias={categorias || CATEGORIAS_DEFECTO} tenantId={tenantId} entidad={entidad} onCambiarEntidad={handleCambiarEntidad} />
         )}
         {active === "informes" && (
-          <InformesView transacciones={todasTransacciones} ventasProshop={ventasProshop} />
+          <InformesView transacciones={transaccionesVista} ventasProshop={ventasProshopVista} />
         )}
         {active === "ventas_gcr" && <VentasGCRView tenantId={tenantId} />}
+        {active === "gestoria" && <GestoriaView transacciones={transaccionesVista} entidad={entidad} />}
         {active === "presupuestos" && (
-          <PresupuestosView presupuestos={presupuestos} transacciones={todasTransacciones} />
+          <PresupuestosView presupuestos={presupuestosVista} transacciones={transaccionesVista} />
         )}
-        {active === "metas" && <MetasView metas={metas} />}
+        {active === "metas" && <MetasView metas={metasVista} />}
         {active === "tareas" && (
           <TareasView tareas={tareas} onUpdateStatus={handleUpdateTareaStatus} />
         )}

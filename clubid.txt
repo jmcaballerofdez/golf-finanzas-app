@@ -1,0 +1,9 @@
+59:const CLUB_ID = "ciudad-real";
+932:        const clubId = CLUB_ID;
+963:        const clubId = CLUB_ID;
+2285:          const clubSnap = await getDoc(docRef(db, "clubes", CLUB_ID));
+2302:    const base = `clubes/${CLUB_ID}`;
+2332:    await addDoc(collection(db, `clubes/${CLUB_ID}/finanzas_transacciones`), {
+2339:    await updateDoc(doc(db, `clubes/${CLUB_ID}/finanzas_tareas`, id), {
+2346:    await setDoc(doc(db, `clubes/${CLUB_ID}/finanzas_config`, "categorias"), nuevas);
+2457:          await Promise.all(lote.map((it) => deleteDoc(doc(db, `clubes/${CLUB_ID}/${ruta}`, it.id))));
