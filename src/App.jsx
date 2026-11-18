@@ -1,9 +1,10 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import { db, auth, storage, leerTicketIA } from "./firebase";
 import { ref, uploadBytes, getDownloadURL, getBlob, deleteObject } from "firebase/storage";
 import {
   collection,
   getDocs,
+  getDoc,
   onSnapshot,
   addDoc,
   updateDoc,
@@ -626,7 +627,10 @@ function ModalCategorias({ categorias, onClose, onGuardar }) {
 
 /* ------------------------------------- Resumen (dashboard) ------------------------------------- */
 
-function ResumenView({ transacciones, presupuestos, metas, ventasProshop, categorias, onGuardarCategorias }) {
+// Ventas del Excel (colección ventas_gcr / ventas_jmcf) para el Resumen: se leen solo los meses que hacen falta.
+const xlTitulo = (s) => String(s || "Sin familia").toLowerCase().replace(/(^|\s)\S/g, (c) => c.toUpperCase());
+
+function ResumenView({ transacciones: transaccionesProp, presupuestos, metas, ventasProshop: ventasProshopProp, categorias, onGuardarCategorias, tenantId, ventasEnt }) {
   const now = new Date();
   const [preset, setPreset] = useState("mes");
   const [desdeManual, setDesdeManual] = useState(new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10));
@@ -637,6 +641,67 @@ function ResumenView({ transacciones, presupuestos, metas, ventasProshop, catego
 
   const { desde, hasta } = useMemo(() => calcularRango(preset, desdeManual, hastaManual), [preset, desdeManual, hastaManual]);
 
+  // --- Ventas del Excel: se cargan los meses del periodo (y los 12 anteriores, para "vs. año anterior") ---
+  const xlCache = useRef({});
+  const [xl, setXl] = useState({ lineas: [], maxPorMes: {} });
+  const [xlCargando, setXlCargando] = useState(false);
+  useEffect(() => {
+    let vivo = true;
+    (async () => {
+      if (!tenantId || !ventasEnt) return;
+      const col = VG_ENTS[ventasEnt]?.col;
+      if (!col) return;
+      setXlCargando(true);
+      const ini = new Date(desde); ini.setFullYear(ini.getFullYear() - 1);
+      const ids = [];
+      for (let y = ini.getFullYear(), m = ini.getMonth(); y < hasta.getFullYear() || (y === hasta.getFullYear() && m <= hasta.getMonth()); ) {
+        ids.push(`${y}-${String(m + 1).padStart(2, "0")}`);
+        m += 1; if (m > 11) { m = 0; y += 1; }
+        if (ids.length > 72) break;
+      }
+      const lineas = [];
+      const maxPorMes = {};
+      for (const id of ids) {
+        const clave = `${col}/${id}`;
+        if (!(clave in xlCache.current)) {
+          try {
+            const snap = await getDoc(doc(db, `clubes/${tenantId}/${col}`, id));
+            xlCache.current[clave] = snap.exists() ? snap.data().lineas || [] : null;
+          } catch (e) {
+            xlCache.current[clave] = null; // sin permiso o sin datos: el resumen sigue con lo que hay
+          }
+        }
+        const ls = xlCache.current[clave];
+        if (ls && ls.length) {
+          ls.forEach((l) => lineas.push({ date: `${l.d}T12:00:00`, d: l.d, total: Number(l.t || 0), category: xlTitulo(l.f) }));
+          maxPorMes[id] = ls.reduce((mx, l) => (l.d > mx ? l.d : mx), "");
+        }
+      }
+      if (vivo) { setXl({ lineas, maxPorMes }); setXlCargando(false); }
+    })();
+    return () => { vivo = false; };
+  }, [tenantId, ventasEnt, desde, hasta]);
+
+  // Para no contar dos veces: donde el Excel tiene ventas (hasta su última fecha de ese mes),
+  // no se cuentan las ventas "Ventas Campo" de Transacciones (club) ni Academia/Proshop automáticos (JMCF).
+  const cubiertoPorExcel = (fecha) => {
+    const f = aFecha(fecha);
+    if (!f || isNaN(f)) return false;
+    const d = `${f.getFullYear()}-${String(f.getMonth() + 1).padStart(2, "0")}-${String(f.getDate()).padStart(2, "0")}`;
+    const mx = xl.maxPorMes[d.slice(0, 7)];
+    return !!mx && d <= mx;
+  };
+  const transacciones = useMemo(
+    () => transaccionesProp.filter((t) => {
+      const esVentaDuplicable = ventasEnt === "jmcf"
+        ? (t.type === "income" && (String(t.id).startsWith("academia-") || t.origen === "academia"))
+        : (t.type === "income" && normTx(t.category) === "ventas campo");
+      return !(esVentaDuplicable && cubiertoPorExcel(t.date));
+    }),
+    [transaccionesProp, xl, ventasEnt]
+  );
+  const ventasProshop = useMemo(() => ventasProshopProp.filter((v) => !cubiertoPorExcel(v.creadoEn)), [ventasProshopProp, xl]);
+
   const enRango = (t) => { const f = aFecha(t.date); return f >= desde && f <= hasta; };
   const delRango = transacciones.filter(enRango);
 
@@ -646,7 +711,10 @@ function ResumenView({ transacciones, presupuestos, metas, ventasProshop, catego
   const ventasProshopRango = ventasProshop.filter((v) => { const f = aFecha(v.creadoEn); return f >= desde && f <= hasta; });
   const totalProshopAuto = ventasProshopRango.reduce((s, v) => s + Number(v.total || 0), 0);
 
-  const totalIngresos = ingresosManual.reduce((s, t) => s + Number(t.amount), 0) + totalProshopAuto;
+  const ventasXlRango = xl.lineas.filter((l) => { const f = aFecha(l.date); return f >= desde && f <= hasta; });
+  const totalXl = ventasXlRango.reduce((s, l) => s + l.total, 0);
+
+  const totalIngresos = ingresosManual.reduce((s, t) => s + Number(t.amount), 0) + totalProshopAuto + totalXl;
   const totalGastos = gastosManual.reduce((s, t) => s + Number(t.amount), 0);
   const balance = totalIngresos - totalGastos;
 
@@ -661,8 +729,11 @@ function ResumenView({ transacciones, presupuestos, metas, ventasProshop, catego
     if (totalProshopAuto > 0 || ventasProshopRango.length > 0) {
       base.push({ category: "Proshop", total: totalProshopAuto, automatico: true });
     }
+    const porFamilia = {};
+    ventasXlRango.forEach((l) => { porFamilia[l.category] = (porFamilia[l.category] || 0) + l.total; });
+    Object.entries(porFamilia).forEach(([category, total]) => base.push({ category: `Ventas · ${category}`, total: Math.round(total * 100) / 100, automatico: true }));
     return base.sort((a, b) => b.total - a.total);
-  }, [ingresosManual, totalProshopAuto]);
+  }, [ingresosManual, totalProshopAuto, ventasXlRango]);
 
   const desgloseGastos = useMemo(() => agruparPorCategoria(gastosManual).sort((a, b) => b.total - a.total), [gastosManual]);
 
@@ -677,13 +748,15 @@ function ResumenView({ transacciones, presupuestos, metas, ventasProshop, catego
       const diasBucket = Math.max(1, Math.round((b.fin - b.inicio) / 86400000) + 1);
 
       const ingB = sumaEnRango(transacciones, b.inicio, b.fin, "date", "amount", (t) => t.type === "income")
-        + sumaEnRango(ventasProshop, b.inicio, b.fin, "creadoEn", "total");
+        + sumaEnRango(ventasProshop, b.inicio, b.fin, "creadoEn", "total")
+        + sumaEnRango(xl.lineas, b.inicio, b.fin, "date", "total");
       const gasB = sumaEnRango(transacciones, b.inicio, b.fin, "date", "amount", (t) => t.type === "expense");
 
       const inicioAnt = new Date(b.inicio); inicioAnt.setFullYear(inicioAnt.getFullYear() - 1);
       const finAnt = new Date(b.fin); finAnt.setFullYear(finAnt.getFullYear() - 1);
       const ingAnt = sumaEnRango(transacciones, inicioAnt, finAnt, "date", "amount", (t) => t.type === "income")
-        + sumaEnRango(ventasProshop, inicioAnt, finAnt, "creadoEn", "total");
+        + sumaEnRango(ventasProshop, inicioAnt, finAnt, "creadoEn", "total")
+        + sumaEnRango(xl.lineas, inicioAnt, finAnt, "date", "total");
       const gasAnt = sumaEnRango(transacciones, inicioAnt, finAnt, "date", "amount", (t) => t.type === "expense");
 
       const presupuestoB = totalPresupuestoMensual * (diasBucket / 30.44);
@@ -697,7 +770,7 @@ function ResumenView({ transacciones, presupuestos, metas, ventasProshop, catego
         "Presupuesto gastos": presupuestoB,
       };
     });
-  }, [desde, hasta, transacciones, ventasProshop, totalPresupuestoMensual]);
+  }, [desde, hasta, transacciones, ventasProshop, xl, totalPresupuestoMensual]);
 
   const currentMonth = monthKey(now.toISOString());
   const delMes = transacciones.filter((t) => monthKey(t.date) === currentMonth);
@@ -737,6 +810,7 @@ function ResumenView({ transacciones, presupuestos, metas, ventasProshop, catego
             <div style={{ fontSize: 28, fontWeight: 700, marginTop: 10, color: theme.ink, fontFamily: "Playfair Display, serif" }}>
               {fmtEUR(totalIngresos)}
             </div>
+            {xlCargando && <div style={{ fontSize: 11.5, color: theme.inkSoft, marginTop: 4 }}>Cargando ventas…</div>}
           </div>
         </Card>
         <Card style={{ padding: 0, overflow: "hidden" }}>
@@ -4355,6 +4429,8 @@ function App() {
             ventasProshop={ventasProshopVista}
             categorias={categorias || CATEGORIAS_DEFECTO}
             onGuardarCategorias={handleGuardarCategorias}
+            tenantId={tenantId}
+            ventasEnt={entidad === "jmcf" ? "jmcf" : "gcr"}
           />
         )}
         {active === "transacciones" && (
