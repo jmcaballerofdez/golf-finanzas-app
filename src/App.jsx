@@ -1584,10 +1584,354 @@ function TransaccionForm({ onClose, onSave, initial, categorias, entidadInicial 
   );
 }
 
+/* ============================ IMPORTAR PROVEEDORES (Excel "Control de proveedores") ============================ */
+// Lee el Excel de facturas de proveedores y lo guarda como gastos del club (Transacciones), con proveedor, nº de factura y cuenta contable.
+// Es idempotente: cada factura tiene un identificador propio, así que volver a importar el Excel acumulado solo añade lo nuevo.
+const PROV_FAMILIAS = {
+  "INSTALACIONES": "Instalaciones", "SUMINISTROS": "Suministros", "COMPETICIONES": "Competiciones", "MAQUINARIA": "Maquinaria",
+  "ADMINISTRACION": "Administración", "MARKETING Y PUBLICIDAD": "Marketing y publicidad", "MANTENIMIENTO": "Mantenimiento",
+  "RRHH": "Recursos humanos", "LIMPIEZA E HIGIENE": "Limpieza e higiene", "GASTOS REPRESENTACION": "Gastos de representación",
+};
+const provLimpio = (s) => String(s ?? "").replace(/\s+/g, " ").trim();
+const provNorm = (s) => normTx(provLimpio(s)).replace(/[º°.]/g, "").replace(/\s+/g, " ").trim();
+const provTitulo = (s) => { const t = provLimpio(s).toLowerCase(); return t ? t.charAt(0).toUpperCase() + t.slice(1) : ""; };
+
+function provHash(texto) {
+  let h1 = 0x811c9dc5, h2 = 0x9747b28c;
+  for (let i = 0; i < texto.length; i++) {
+    const c = texto.charCodeAt(i);
+    h1 ^= c; h1 = Math.imul(h1, 16777619) >>> 0;
+    h2 ^= c; h2 = Math.imul(h2, 2246822519) >>> 0;
+  }
+  return h1.toString(16).padStart(8, "0") + h2.toString(16).padStart(8, "0");
+}
+
+function provImporte(v) {
+  if (typeof v === "number") return isFinite(v) ? v : null;
+  let s = String(v ?? "").replace(/[€\s]/g, "");
+  if (!s) return null;
+  if (s.includes(",") && s.includes(".")) s = s.replace(/\./g, "").replace(",", ".");
+  else if (s.includes(",")) s = s.replace(",", ".");
+  const n = parseFloat(s);
+  return isFinite(n) && /^-?\d+(\.\d+)?$/.test(s) ? n : null;
+}
+
+// Devuelve "AAAA-MM-DD" a partir de una fecha de Excel (Date) o de un texto dd-mm-aaaa / dd/mm/aaaa.
+function provFecha(v) {
+  if (v instanceof Date && !isNaN(v)) {
+    const comoUtc = v.getTime() - v.getTimezoneOffset() * 60000; // lo que se ve en la celda
+    const dia = new Date(Math.floor((comoUtc + 43200000) / 86400000) * 86400000);
+    return `${dia.getUTCFullYear()}-${String(dia.getUTCMonth() + 1).padStart(2, "0")}-${String(dia.getUTCDate()).padStart(2, "0")}`;
+  }
+  const m = String(v ?? "").trim().match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$/);
+  if (!m) return null;
+  const d = Number(m[1]), mes = Number(m[2]);
+  if (mes < 1 || mes > 12 || d < 1 || d > 31) return null;
+  return `${m[3]}-${String(mes).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+}
+
+const provSugerirCuenta = (concepto, proveedor) => {
+  const t = normTx(`${concepto} ${proveedor}`);
+  if (/gasoleo|gasoil|combustible|diesel/.test(t)) return "62800002";
+  if (/extintor|prevencion|seguridad/.test(t)) return "62900005";
+  if (/vinilo|rotul|senal|publicidad|cartel/.test(t)) return "62700000";
+  if (/fito|herbicid|fungicid|semilla|abono|devolucion fac/.test(t)) return "62900010";
+  return "62900011";
+};
+
+// filas: matriz (hoja leída con header:1). Devuelve { filas:[...], hoja:{anio}, error? }
+function provParsear(filas) {
+  const idxCab = filas.findIndex((r) => r.some((c) => provNorm(c) === "fecha") && r.some((c) => provNorm(c) === "proveedor"));
+  if (idxCab < 0) return { error: "No encuentro la cabecera (FECHA, PROVEEDOR, IMPORTE…). ¿Es el Excel de control de proveedores?" };
+  const cab = filas[idxCab].map(provNorm);
+  const col = (...nombres) => cab.findIndex((h) => nombres.some((n) => h === n || h.startsWith(n)));
+  const c = {
+    fecha: col("fecha"), prov: col("proveedor"), conc: col("concepto"), imp: col("importe"),
+    sub: col("subfamilia"), fam: col("familia"), cta: col("n cuenta", "numero cuenta", "cuenta"), fac: col("n factura", "numero factura", "factura"),
+  };
+  if (c.fecha < 0 || c.prov < 0 || c.imp < 0) return { error: "Faltan columnas obligatorias (FECHA, PROVEEDOR, IMPORTE)." };
+  const items = [];
+  filas.slice(idxCab + 1).forEach((r, i) => {
+    const fecha = provFecha(r[c.fecha]);
+    const importe = provImporte(r[c.imp]);
+    const proveedor = provLimpio(r[c.prov]);
+    if (!fecha || importe === null || !proveedor) return;
+    const ctaCruda = c.cta >= 0 ? provLimpio(r[c.cta]) : "";
+    const cuenta = /^\d{8}$/.test(ctaCruda) ? ctaCruda : "";
+    items.push({
+      fila: idxCab + 2 + i, fecha, anio: Number(fecha.slice(0, 4)), proveedor,
+      concepto: c.conc >= 0 ? provLimpio(r[c.conc]) : "", importe: Math.round(importe * 100) / 100,
+      familia: c.fam >= 0 ? provLimpio(r[c.fam]) : "", subfamilia: c.sub >= 0 ? provLimpio(r[c.sub]) : "",
+      cuenta, factura: c.fac >= 0 ? provLimpio(r[c.fac]) : "",
+    });
+  });
+  if (!items.length) return { error: "No he encontrado facturas con fecha e importe válidos." };
+  // Año de la hoja = el año más frecuente
+  const cont = {};
+  items.forEach((x) => { cont[x.anio] = (cont[x.anio] || 0) + 1; });
+  const anioHoja = Number(Object.entries(cont).sort((a, b) => b[1] - a[1])[0][0]);
+  // Cuenta -> familia/subfamilia más habitual (para clasificar las filas sin cuenta cuando se les asigne una)
+  const mapaCuenta = {};
+  items.forEach((x) => {
+    if (!x.cuenta || !x.familia || x.familia === "#N/A") return;
+    const k = x.cuenta; const m = (mapaCuenta[k] = mapaCuenta[k] || {});
+    const fk = `${provNorm(x.familia)}|${provLimpio(x.subfamilia)}`; m[fk] = (m[fk] || 0) + 1;
+  });
+  const famDeCuenta = (cta) => {
+    const m = mapaCuenta[cta]; if (!m) return null;
+    const [fk] = Object.entries(m).sort((a, b) => b[1] - a[1])[0];
+    const [f, s] = fk.split("|"); return { familia: f.toUpperCase(), subfamilia: s };
+  };
+  // Duplicados y su identificador estable
+  const vistos = {}, vistosCompleto = {};
+  items.forEach((x) => {
+    const clave = `${x.fecha}|${provNorm(x.proveedor)}|${provNorm(x.factura)}|${x.importe.toFixed(2)}`;
+    vistos[clave] = (vistos[clave] || 0) + 1;
+    x.duplicadoDe = vistos[clave] > 1 ? vistos[clave] : 0; // 0 = primera aparición
+    const completa = `${clave}|${provNorm(x.concepto)}`;
+    vistosCompleto[completa] = (vistosCompleto[completa] || 0) + 1;
+    x.id = "prov-" + provHash(`${completa}|${vistosCompleto[completa]}`);
+    x.fueraAnio = x.anio !== anioHoja;
+    // Fecha posterior a hoy: casi siempre es día y mes cambiados (01-12-2026 en vez de 12-01-2026). Se propone la corregida.
+    const hoyIso = new Date().toISOString().slice(0, 10);
+    if (x.fecha > hoyIso) {
+      x.fechaOriginal = x.fecha;
+      const [yy, mm, dd] = x.fecha.split("-");
+      const cambiada = `${yy}-${dd}-${mm}`;
+      if (Number(dd) <= 12 && cambiada <= hoyIso) { x.fecha = cambiada; x.fechaSugerida = true; }
+      x.fechaFutura = true;
+    }
+    x.sinCuentaOriginal = !x.cuenta;
+    if (!x.cuenta) { x.cuenta = provSugerirCuenta(x.concepto, x.proveedor); x.cuentaSugerida = true; }
+    const fd = famDeCuenta(x.cuenta);
+    if (!x.familia || x.familia === "#N/A") { if (fd) { x.familia = fd.familia; x.subfamilia = fd.subfamilia; } else x.familia = ""; }
+    x.incluir = !x.duplicadoDe && !x.fueraAnio;
+  });
+  return { filas: items, anioHoja, mapaCuenta: Object.fromEntries(Object.keys(mapaCuenta).map((k) => [k, famDeCuenta(k)])) };
+}
+
+function provATransaccion(x, mapaCuenta) {
+  // si el usuario cambió la cuenta de una fila sin cuenta, se reclasifica según esa cuenta
+  let familia = x.familia, sub = x.subfamilia;
+  if (x.sinCuentaOriginal && mapaCuenta[x.cuenta]) { familia = mapaCuenta[x.cuenta].familia; sub = mapaCuenta[x.cuenta].subfamilia; }
+  const famKey = provLimpio(familia).toUpperCase();
+  return {
+    type: "expense",
+    category: PROV_FAMILIAS[famKey] || provTitulo(familia) || "Sin clasificar",
+    subcategory: provTitulo(sub),
+    description: x.concepto,
+    proveedor: x.proveedor,
+    amount: x.importe.toFixed(2),
+    date: new Date(x.fecha).toISOString(),
+    activity: "",
+    iva_type: "",
+    base_amount: null,
+    iva_amount: null,
+    irpf_deductible: "no",
+    origen: "proveedores",
+    cuenta: x.cuenta,
+    num_factura: x.factura || "",
+  };
+}
+
+function ImportarProveedoresModal({ onClose, tenantId, transacciones }) {
+  const [archivo, setArchivo] = useState("");
+  const [items, setItems] = useState(null);
+  const [mapaCuenta, setMapaCuenta] = useState({});
+  const [anioHoja, setAnioHoja] = useState(null);
+  const [error, setError] = useState("");
+  const [leyendo, setLeyendo] = useState(false);
+  const [progreso, setProgreso] = useState(null);
+  const [hecho, setHecho] = useState(null);
+
+  const cuentasGasto = useMemo(
+    () => Object.keys(PYG_NOMBRES).filter((c) => /^6/.test(c)).sort().map((c) => [c, `${c} · ${PYG_NOMBRES[c]}`]),
+    []
+  );
+  const existentes = useMemo(() => new Map(transacciones.map((t) => [t.id, t])), [transacciones]);
+
+  const leer = async (file) => {
+    if (!file) return;
+    setError(""); setLeyendo(true); setItems(null); setHecho(null);
+    try {
+      const XLSX = await import("xlsx");
+      const wb = XLSX.read(await file.arrayBuffer(), { type: "array", cellDates: true });
+      // hoja con las facturas: la primera que tenga cabecera FECHA + PROVEEDOR
+      let res = null;
+      for (const nombre of wb.SheetNames) {
+        const filas = XLSX.utils.sheet_to_json(wb.Sheets[nombre], { header: 1, defval: "", raw: true });
+        const r = provParsear(filas);
+        if (!r.error) { res = r; break; }
+        if (!res) res = r;
+      }
+      if (res.error) { setError(res.error); }
+      else { setItems(res.filas); setMapaCuenta(res.mapaCuenta); setAnioHoja(res.anioHoja); setArchivo(file.name); }
+    } catch (e) {
+      setError("No se ha podido leer el archivo. Comprueba que sea un .xlsx válido.");
+    }
+    setLeyendo(false);
+  };
+
+  const cambiar = (id, campos) => setItems((arr) => arr.map((x) => (x.id === id ? { ...x, ...campos } : x)));
+
+  const aImportar = (items || []).filter((x) => x.incluir);
+  const total = aImportar.reduce((s, x) => s + x.importe, 0);
+  const estado = (x) => {
+    const e = existentes.get(x.id);
+    if (!e) return "nueva";
+    const t = provATransaccion(x, mapaCuenta);
+    return String(e.amount) === t.amount && e.cuenta === t.cuenta && e.category === t.category && e.description === t.description && e.proveedor === t.proveedor ? "igual" : "cambiada";
+  };
+  const resumen = { nueva: 0, igual: 0, cambiada: 0 };
+  aImportar.forEach((x) => { resumen[estado(x)] += 1; });
+  const dups = (items || []).filter((x) => x.duplicadoDe);
+  const sinCuenta = (items || []).filter((x) => x.sinCuentaOriginal && !x.fueraAnio);
+  const fuera = (items || []).filter((x) => x.fueraAnio);
+  const futuras = (items || []).filter((x) => x.fechaFutura);
+
+  const importar = async () => {
+    setError("");
+    const lista = aImportar.filter((x) => estado(x) !== "igual");
+    setProgreso({ hechos: 0, total: lista.length });
+    try {
+      for (let i = 0; i < lista.length; i += 20) {
+        const lote = lista.slice(i, i + 20);
+        await Promise.all(lote.map((x) => {
+          const datos = provATransaccion(x, mapaCuenta);
+          const nueva = !existentes.has(x.id);
+          return setDoc(
+            doc(db, `clubes/${tenantId}/finanzas_transacciones`, x.id),
+            nueva ? { ...datos, entidad: "club", created_at: serverTimestamp() } : datos,
+            { merge: true }
+          );
+        }));
+        setProgreso({ hechos: Math.min(i + 20, lista.length), total: lista.length });
+      }
+      setHecho({ nuevas: resumen.nueva, cambiadas: resumen.cambiada, iguales: resumen.igual });
+    } catch (e) {
+      setError("No se ha podido guardar: " + (e?.message || e));
+    }
+    setProgreso(null);
+  };
+
+  const th = { textAlign: "left", padding: "6px 8px", fontSize: 11.5, color: theme.inkSoft, borderBottom: `1px solid ${theme.border}` };
+  const td = { padding: "6px 8px", fontSize: 12.5, color: theme.ink, borderBottom: `1px solid ${theme.border}`, verticalAlign: "top" };
+  const bloque = (titulo, ayuda, filas) => filas.length > 0 && (
+    <div style={{ marginTop: 14 }}>
+      <div style={{ fontWeight: 700, fontSize: 13.5, color: theme.ink }}>{titulo} ({filas.length})</div>
+      <div style={{ fontSize: 12, color: theme.inkSoft, margin: "2px 0 6px" }}>{ayuda}</div>
+      <div style={{ border: `1px solid ${theme.border}`, borderRadius: 8, maxHeight: 220, overflow: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <tbody>{filas}</tbody>
+        </table>
+      </div>
+    </div>
+  );
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(28,43,34,0.35)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 60 }}>
+      <div className="shadow-lg rounded-2xl" style={{ background: theme.surface, padding: 24, width: 760, maxWidth: "94vw", maxHeight: "90vh", overflow: "auto" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+          <div style={{ fontWeight: 700, fontSize: 16, color: theme.ink }}>Importar facturas de proveedores</div>
+          <button type="button" onClick={onClose} style={{ border: "none", background: "none", cursor: "pointer" }}><X size={18} /></button>
+        </div>
+
+        {hecho ? (
+          <div>
+            <div style={{ background: "#E7F3EB", color: theme.success, padding: 12, borderRadius: 10, fontSize: 14 }}>
+              Importación terminada: {hecho.nuevas} facturas nuevas, {hecho.cambiadas} actualizadas y {hecho.iguales} que ya estaban.
+            </div>
+            <div style={{ textAlign: "right", marginTop: 14 }}>
+              <button onClick={onClose} style={{ background: theme.accent, color: "#fff", border: "none", borderRadius: 8, padding: "9px 16px", fontWeight: 600, cursor: "pointer" }}>Cerrar</button>
+            </div>
+          </div>
+        ) : !items ? (
+          <label style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10, border: `2px dashed ${theme.border}`, borderRadius: 12, padding: "36px 16px", cursor: "pointer", textAlign: "center" }}>
+            <Upload size={30} color={theme.accent} />
+            <span style={{ fontSize: 13, color: theme.inkSoft }}>
+              {leyendo ? "Leyendo el Excel…" : "Excel «Control de proveedores» (.xlsx). Puedes volver a importar el archivo completo: solo se añade lo nuevo."}
+            </span>
+            <input type="file" accept=".xlsx,.xls" style={{ display: "none" }} onChange={(e) => leer(e.target.files?.[0])} />
+          </label>
+        ) : (
+          <div>
+            <div style={{ fontSize: 13, color: theme.inkSoft }}>{archivo} · hoja de {anioHoja} · {items.length} facturas leídas</div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10, margin: "10px 0" }}>
+              {[["A importar", `${aImportar.length} · ${fmtEUR(total)}`], ["Nuevas", resumen.nueva], ["Ya existentes", resumen.igual], ["Actualizadas", resumen.cambiada]].map(([t, v]) => (
+                <div key={t} style={{ background: theme.surface, border: `1px solid ${theme.border}`, borderRadius: 10, padding: "8px 10px" }}>
+                  <div style={{ fontSize: 11.5, color: theme.inkSoft }}>{t}</div>
+                  <div style={{ fontSize: 15, fontWeight: 700, color: theme.ink }}>{v}</div>
+                </div>
+              ))}
+            </div>
+
+            {bloque("Posibles duplicados", "Mismo proveedor, nº de factura, importe y fecha. Por defecto solo se importa la primera; marca la casilla si es una factura distinta.",
+              dups.map((x) => (
+                <tr key={x.id}>
+                  <td style={td}><input type="checkbox" checked={x.incluir} onChange={(e) => cambiar(x.id, { incluir: e.target.checked })} /></td>
+                  <td style={td}>{x.fecha}</td><td style={td}>{x.proveedor}</td><td style={td}>{x.concepto}<div style={{ color: theme.inkSoft }}>{x.factura}</div></td>
+                  <td style={{ ...td, textAlign: "right", whiteSpace: "nowrap" }}>{fmtEUR(x.importe)}</td>
+                </tr>
+              )))}
+
+            {bloque("Sin cuenta contable", "Estos proveedores no están en tu tabla de proveedores. Te propongo una cuenta; cámbiala si no es la correcta.",
+              sinCuenta.map((x) => (
+                <tr key={x.id}>
+                  <td style={td}>{x.fecha}</td><td style={td}>{x.proveedor}<div style={{ color: theme.inkSoft }}>{x.concepto}</div></td>
+                  <td style={{ ...td, textAlign: "right", whiteSpace: "nowrap" }}>{fmtEUR(x.importe)}</td>
+                  <td style={td}>
+                    <select value={x.cuenta} onChange={(e) => cambiar(x.id, { cuenta: e.target.value, cuentaSugerida: false })} style={{ padding: "4px 6px", borderRadius: 6, border: `1px solid ${theme.border}`, fontSize: 12, maxWidth: 230 }}>
+                      {cuentasGasto.map(([c, t]) => <option key={c} value={c}>{t}</option>)}
+                    </select>
+                  </td>
+                </tr>
+              )))}
+
+            {bloque("Fecha posterior a hoy", "La fecha del Excel es futura, probablemente con día y mes cambiados. Te propongo la fecha corregida; edítala si no es la correcta.",
+              futuras.map((x) => (
+                <tr key={x.id}>
+                  <td style={td}>
+                    <input type="date" value={x.fecha} onChange={(e) => e.target.value && cambiar(x.id, { fecha: e.target.value, anio: Number(e.target.value.slice(0, 4)) })} style={{ padding: "3px 6px", borderRadius: 6, border: `1px solid ${theme.border}`, fontSize: 12 }} />
+                    <div style={{ color: theme.inkSoft, fontSize: 11.5 }}>Excel: {x.fechaOriginal}</div>
+                  </td>
+                  <td style={td}>{x.proveedor}<div style={{ color: theme.inkSoft }}>{x.concepto}</div></td>
+                  <td style={{ ...td, textAlign: "right", whiteSpace: "nowrap" }}>{fmtEUR(x.importe)}</td>
+                </tr>
+              )))}
+
+            {bloque("Fuera del año de la hoja", `Facturas con fecha distinta de ${anioHoja}. Por defecto no se importan.`,
+              fuera.map((x) => (
+                <tr key={x.id}>
+                  <td style={td}><input type="checkbox" checked={x.incluir} onChange={(e) => cambiar(x.id, { incluir: e.target.checked })} /></td>
+                  <td style={td}>{x.fecha}</td><td style={td}>{x.proveedor}<div style={{ color: theme.inkSoft }}>{x.concepto}</div></td>
+                  <td style={{ ...td, textAlign: "right", whiteSpace: "nowrap" }}>{fmtEUR(x.importe)}</td>
+                </tr>
+              )))}
+
+            <div style={{ fontSize: 12, color: theme.inkSoft, marginTop: 12 }}>
+              Se guardan como gastos del club (importe con IVA incluido), con su proveedor, nº de factura y cuenta contable. Las facturas ya importadas no se duplican.
+            </div>
+            <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 10, marginTop: 14 }}>
+              {progreso && <span style={{ fontSize: 13, color: theme.inkSoft }}>Guardando {progreso.hechos} de {progreso.total}…</span>}
+              <button onClick={() => { setItems(null); setArchivo(""); }} disabled={!!progreso} style={{ background: "#fff", border: `1px solid ${theme.border}`, borderRadius: 8, padding: "9px 14px", fontWeight: 600, cursor: "pointer", color: theme.inkSoft }}>Otro archivo</button>
+              <button onClick={importar} disabled={!!progreso || aImportar.length === 0 || resumen.nueva + resumen.cambiada === 0}
+                style={{ background: theme.accent, color: "#fff", border: "none", borderRadius: 8, padding: "9px 16px", fontWeight: 600, cursor: "pointer", opacity: progreso || resumen.nueva + resumen.cambiada === 0 ? 0.5 : 1 }}>
+                Importar {resumen.nueva + resumen.cambiada} facturas
+              </button>
+            </div>
+          </div>
+        )}
+        {error && <div style={{ background: "#FBEAE5", color: theme.danger, padding: 10, borderRadius: 10, fontSize: 13, marginTop: 12 }}>{error}</div>}
+      </div>
+    </div>
+  );
+}
+
 function TransaccionesView({ transacciones, onAdd, categorias, tenantId, entidad, onCambiarEntidad, onBorrar }) {
   const [showForm, setShowForm] = useState(false);
   const [showScan, setShowScan] = useState(false);
   const [showImportar, setShowImportar] = useState(false);
+  const [showProveedores, setShowProveedores] = useState(false);
   const [datosDetectados, setDatosDetectados] = useState(null);
   const [errorTicket, setErrorTicket] = useState("");
   const abrirTicket = async (t) => {
@@ -1624,6 +1968,15 @@ function TransaccionesView({ transacciones, onAdd, categorias, tenantId, entidad
           >
             <Upload size={16} /> Importar Excel/CSV
           </button>
+          {entidad === "club" && (
+            <button
+              onClick={() => setShowProveedores(true)}
+              className="rounded-md"
+              style={{ display: "flex", alignItems: "center", gap: 6, background: "#fff", color: theme.pine, border: `1px solid ${theme.border}`, padding: "8px 14px", fontWeight: 600, cursor: "pointer" }}
+            >
+              <Upload size={16} /> Importar proveedores
+            </button>
+          )}
           <button
             onClick={() => setShowScan(true)}
             className="rounded-md"
@@ -1758,6 +2111,10 @@ function TransaccionesView({ transacciones, onAdd, categorias, tenantId, entidad
             setShowForm(true);
           }}
         />
+      )}
+
+      {showProveedores && (
+        <ImportarProveedoresModal onClose={() => setShowProveedores(false)} tenantId={tenantId} transacciones={transacciones} />
       )}
 
       {showImportar && (
@@ -3290,7 +3647,32 @@ const pygPct = (a, b) => (b ? ((a - b) / Math.abs(b)) * 100 : null);
 const pygFmtPct = (p) => (p === null || p === undefined || !isFinite(p) ? "—" : `${p > 0 ? "+" : ""}${p.toFixed(1).replace(".", ",")} %`);
 const pygCorto = (n) => (Math.abs(n) >= 1000 ? `${Math.round(n / 1000)} k` : String(Math.round(n)));
 
-function PygView({ entidad }) {
+// 2026 en curso: solo gastos de proveedores (facturas importadas), agrupados por cuenta contable. No incluye sueldos, seguros, renting ni ingresos.
+function pygDerivar2026(transacciones) {
+  const tx = (transacciones || []).filter((t) => t.origen === "proveedores" && t.type === "expense" && t.cuenta && aFecha(t.date).getFullYear() === 2026);
+  if (!tx.length) return null;
+  const porCuenta = {};
+  let corte = null;
+  tx.forEach((t) => {
+    porCuenta[t.cuenta] = (porCuenta[t.cuenta] || 0) + Number(t.amount || 0);
+    const f = aFecha(t.date); if (!corte || f > corte) corte = f;
+  });
+  const idGrupo = (c) => (c.startsWith("60") ? "aprov" : c.startsWith("64") ? "personal" : c.startsWith("68") ? "amort" : c.startsWith("66") ? "fin" : "otrosgas");
+  const grupos = {};
+  Object.entries(porCuenta).forEach(([c, v]) => {
+    const g = (grupos[idGrupo(c)] = grupos[idGrupo(c)] || { id: idGrupo(c), total: 0, cuentas: [] });
+    const imp = -Math.round(v * 100) / 100;
+    g.total = Math.round((g.total + imp) * 100) / 100;
+    g.cuentas.push({ c, n: PYG_NOMBRES[c] || c, i: imp });
+  });
+  const dd = String(corte.getDate()).padStart(2, "0"), mm = String(corte.getMonth() + 1).padStart(2, "0");
+  return { anio: 2026, parcial: true, corte: `${dd}/${mm}/2026`, grupos: Object.values(grupos), resultado: null };
+}
+
+function PygView({ entidad, transacciones }) {
+  const d2026 = useMemo(() => pygDerivar2026(transacciones), [transacciones]);
+  if (d2026) PYG_DATOS[2026] = d2026; else delete PYG_DATOS[2026];
+  const aniosComp = d2026 ? [...PYG_ANIOS, 2026] : PYG_ANIOS;
   const [tab, setTab] = useState("resumen");
   const [anioA, setAnioA] = useState(2025);
   const [anioB, setAnioB] = useState(2024);
@@ -3315,9 +3697,10 @@ function PygView({ entidad }) {
   const th = { textAlign: "right", padding: "8px 12px", fontSize: 12, color: theme.inkSoft, borderBottom: `1px solid ${theme.border}`, whiteSpace: "nowrap" };
   const td = { padding: "8px 12px", fontSize: 13, color: theme.ink, borderBottom: `1px solid ${theme.border}`, textAlign: "right", whiteSpace: "nowrap" };
   const colorDelta = (d) => (Math.abs(d) < 0.005 ? theme.inkSoft : d > 0 ? theme.success : theme.danger);
-  const selAnio = (valor, set) => (
+  const etiquetaAnio = (a) => (a === 2026 && d2026 ? `2026 (hasta ${d2026.corte.slice(0, 5)}, solo proveedores)` : String(a));
+  const selAnio = (valor, set, lista = PYG_ANIOS) => (
     <select style={ctl} value={valor} onChange={(e) => set(Number(e.target.value))}>
-      {PYG_ANIOS.slice().reverse().map((a) => <option key={a} value={a}>{a}</option>)}
+      {lista.slice().reverse().map((a) => <option key={a} value={a}>{etiquetaAnio(a)}</option>)}
     </select>
   );
 
@@ -3354,7 +3737,8 @@ function PygView({ entidad }) {
       .sort((x, y) => Math.abs(y.a - y.b) - Math.abs(x.a - x.b));
     return { id, nombre, a: pygTotal(anioA, id), b: pygTotal(anioB, id), cuentas };
   }).filter((f) => f.a !== 0 || f.b !== 0 || f.cuentas.length);
-  const resA = PYG_DATOS[anioA].resultado, resB = PYG_DATOS[anioB].resultado;
+  const resA = PYG_DATOS[anioA]?.resultado ?? null, resB = PYG_DATOS[anioB]?.resultado ?? null;
+  const hay2026 = anioA === 2026 || anioB === 2026;
 
   const exportarExcel = async () => {
     setExportando(true);
@@ -3371,8 +3755,10 @@ function PygView({ entidad }) {
         if (negrita) r.font = { bold: true };
       };
       filas.forEach((f) => { fila("", f.nombre, f.a, f.b, true); f.cuentas.forEach((x) => fila(x.c, x.n, x.a, x.b, false)); });
-      ws.addRow({});
-      fila("", "RESULTADO DEL EJERCICIO", resA, resB, true);
+      if (!hay2026 && resA !== null && resB !== null) {
+        ws.addRow({});
+        fila("", "RESULTADO DEL EJERCICIO", resA, resB, true);
+      }
       ["a", "b", "d"].forEach((k) => { ws.getColumn(k).numFmt = "#,##0.00"; });
       ws.getColumn("p").numFmt = "0.0%";
       ws.views = [{ state: "frozen", ySplit: 1 }];
@@ -3395,7 +3781,9 @@ function PygView({ entidad }) {
   PYG_ANIOS.forEach((a) => (PYG_DATOS[a].grupos || []).forEach((g) => g.cuentas.forEach((c) => { todas[c.c] = pygNombre(c.c, c.n); })));
   Object.keys(todas).sort().forEach((c) => opciones.push({ v: c, t: todas[c], g: "Partidas" }));
   const valorEv = (a) => (partida.startsWith("g:") ? pygTotal(a, partida.slice(2)) : pygCuenta(a, partida));
-  const serieEv = PYG_ANIOS.map((a) => ({ anio: String(a), valor: Math.round(valorEv(a) * 100) / 100 }));
+  const esGastoEv = partida.startsWith("g:") ? ["aprov", "personal", "otrosgas", "amort"].includes(partida.slice(2)) : /^6/.test(partida);
+  const aniosEv = d2026 && esGastoEv ? [...PYG_ANIOS, 2026] : PYG_ANIOS;
+  const serieEv = aniosEv.map((a) => ({ anio: a === 2026 ? "2026*" : String(a), valor: Math.round(valorEv(a) * 100) / 100 }));
   const nombreEv = opciones.find((o) => o.v === partida)?.t.replace("▸ ", "") || "";
   const atajos = [["Cuotas de socios", "70500003"], ["Green fees", "70000001"], ["Sueldos", "64000000"], ["Electricidad", "62800003"], ["Reparaciones", "62200000"], ["Subvenciones", "74000000"]];
 
@@ -3408,7 +3796,7 @@ function PygView({ entidad }) {
 
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", margin: "14px 0" }}>
         {[["resumen", "Resumen"], ["comparativa", "Comparativa"], ["evolucion", "Evolución"]].map(([id, t]) => (
-          <button key={id} onClick={() => setTab(id)} style={chip(tab === id)}>{t}</button>
+          <button key={id} onClick={() => { setTab(id); if (id === "resumen") { if (anioA === 2026) setAnioA(2025); if (anioB === 2026) setAnioB(2024); } }} style={chip(tab === id)}>{t}</button>
         ))}
       </div>
 
@@ -3422,6 +3810,7 @@ function PygView({ entidad }) {
             {kpi(`Gastos de explotación ${anioA}`, pygGastos(anioA), pygGastos(anioB), false)}
             {kpi(`Resultado del ejercicio ${anioA}`, resA, resB, true)}
           </div>
+          {d2026 && <div style={{ fontSize: 12, color: theme.inkSoft }}>El Resumen usa años cerrados (2020-2025). Para ver 2026 hasta hoy, usa Comparativa o Evolución.</div>}
           <Card>
             <div style={{ fontWeight: 700, color: theme.ink, marginBottom: 10 }}>Ingresos, gastos y resultado por año</div>
             <div style={{ width: "100%", height: 300 }}>
@@ -3475,7 +3864,7 @@ function PygView({ entidad }) {
       {tab === "comparativa" && (
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
           <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", fontSize: 14, color: theme.inkSoft }}>
-            Comparar {selAnio(anioA, setAnioA)} con {selAnio(anioB, setAnioB)}
+            Comparar {selAnio(anioA, setAnioA, aniosComp)} con {selAnio(anioB, setAnioB, aniosComp)}
             <button onClick={exportarExcel} disabled={exportando} style={{ ...chip(false), marginLeft: "auto", display: "flex", alignItems: "center", gap: 6 }}>
               <Download size={14} /> {exportando ? "Creando…" : "Descargar Excel"}
             </button>
@@ -3486,8 +3875,8 @@ function PygView({ entidad }) {
                 <thead>
                   <tr>
                     <th style={{ ...th, textAlign: "left" }}>Concepto</th>
-                    <th style={th}>{anioA}</th>
-                    <th style={th}>{anioB}</th>
+                    <th style={th}>{anioA === 2026 ? "2026*" : anioA}</th>
+                    <th style={th}>{anioB === 2026 ? "2026*" : anioB}</th>
                     <th style={th}>Diferencia</th>
                     <th style={th}>Variación</th>
                   </tr>
@@ -3520,6 +3909,7 @@ function PygView({ entidad }) {
                       </React.Fragment>
                     );
                   })}
+                  {!hay2026 && resA !== null && resB !== null && (
                   <tr style={{ background: "#F1F6F3" }}>
                     <td style={{ ...td, textAlign: "left", fontWeight: 700 }}>Resultado del ejercicio</td>
                     <td style={{ ...td, fontWeight: 700, color: resA < 0 ? theme.danger : theme.success }}>{fmtEUR(resA)}</td>
@@ -3527,10 +3917,16 @@ function PygView({ entidad }) {
                     <td style={{ ...td, fontWeight: 700, color: colorDelta(resA - resB) }}>{resA - resB >= 0 ? "+" : "−"} {fmtEUR(Math.abs(resA - resB))}</td>
                     <td style={{ ...td, color: colorDelta(resA - resB) }}>{pygFmtPct(pygPct(resA, resB))}</td>
                   </tr>
+                  )}
                 </tbody>
               </table>
             </div>
           </Card>
+          {hay2026 && (
+            <div style={{ background: "#FBF3E0", color: "#7A5B14", padding: 10, borderRadius: 10, fontSize: 12.5 }}>
+              2026 solo incluye las facturas de proveedores importadas hasta el {d2026.corte}: no tiene sueldos, Seguridad Social, renting, seguros ni ingresos, y los años completos suman todo el ejercicio. Compara con cuidado: sirve para partidas concretas (electricidad, gasóleo, reparaciones, fitosanitarios…), no para el resultado.
+            </div>
+          )}
           <div style={{ fontSize: 12, color: theme.inkSoft }}>
             Pulsa un grupo para ver sus partidas, ordenadas por mayor variación. Verde = mejora el resultado (más ingreso o menos gasto) y rojo = lo empeora. Los gastos aparecen en negativo, como en la contabilidad.
           </div>
@@ -3547,7 +3943,7 @@ function PygView({ entidad }) {
             <optgroup label="Partidas">{opciones.filter((o) => o.g === "Partidas").map((o) => <option key={o.v} value={o.v}>{o.t}</option>)}</optgroup>
           </select>
           <Card>
-            <div style={{ fontWeight: 700, color: theme.ink, marginBottom: 10 }}>{nombreEv} · 2020-2025</div>
+            <div style={{ fontWeight: 700, color: theme.ink, marginBottom: 10 }}>{nombreEv} · {aniosEv.length > PYG_ANIOS.length ? `2020-2025 y 2026 hasta el ${d2026.corte.slice(0, 5)}*` : "2020-2025"}</div>
             <div style={{ width: "100%", height: 280 }}>
               <ResponsiveContainer>
                 <BarChart data={serieEv}>
@@ -3586,7 +3982,7 @@ function PygView({ entidad }) {
       )}
 
       <div style={{ fontSize: 11.5, color: theme.inkSoft, marginTop: 14, lineHeight: 1.5 }}>
-        Fuente: PyG de la gestoría (listados de feb. 2022 a feb. 2026). De cada año se usa su presentación más reciente: los datos de 2022 y 2023 vienen reformulados en el PyG del año siguiente, con pequeñas diferencias respecto a la primera presentación.
+        {d2026 ? `* 2026 incluye solo facturas de proveedores importadas hasta el ${d2026.corte}. ` : ""}Fuente: PyG de la gestoría (listados de feb. 2022 a feb. 2026). De cada año se usa su presentación más reciente: los datos de 2022 y 2023 vienen reformulados en el PyG del año siguiente, con pequeñas diferencias respecto a la primera presentación.
       </div>
     </div>
   );
@@ -4794,7 +5190,7 @@ function App() {
           <InformesView transacciones={transaccionesVista} ventasProshop={ventasProshopVista} />
         )}
         {active === "ventas_gcr" && <VentasGCRView tenantId={tenantId} />}
-        {active === "pyg" && <PygView entidad={entidad} />}
+        {active === "pyg" && <PygView entidad={entidad} transacciones={transaccionesVista} />}
         {active === "gestoria" && <GestoriaView transacciones={transaccionesVista} entidad={entidad} />}
         {active === "presupuestos" && (
           <PresupuestosView presupuestos={presupuestosVista} transacciones={transaccionesVista} />
