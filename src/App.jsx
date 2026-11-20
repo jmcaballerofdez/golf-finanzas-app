@@ -3647,16 +3647,30 @@ const pygPct = (a, b) => (b ? ((a - b) / Math.abs(b)) * 100 : null);
 const pygFmtPct = (p) => (p === null || p === undefined || !isFinite(p) ? "—" : `${p > 0 ? "+" : ""}${p.toFixed(1).replace(".", ",")} %`);
 const pygCorto = (n) => (Math.abs(n) >= 1000 ? `${Math.round(n / 1000)} k` : String(Math.round(n)));
 
-// 2026 en curso: solo gastos de proveedores (facturas importadas), agrupados por cuenta contable. No incluye sueldos, seguros, renting ni ingresos.
+// Nóminas 2026 (resúmenes de nómina de la gestoría). Solo totales mensuales de empresa, sin datos por trabajador.
+// bruto = Sueldos y salarios (64000000). ss = Seguridad Social a cargo de la empresa (64200000) = coste empresa - bruto.
+const PYG_NOMINAS_2026 = [
+  { m: 1, bruto: 13491.74, ss: 2482.23 }, { m: 2, bruto: 11421.77, ss: 2908.24 }, { m: 3, bruto: 11494.50, ss: 3002.06 },
+  { m: 4, bruto: 11488.86, ss: 3061.36 }, { m: 5, bruto: 12917.22, ss: 3915.71 }, { m: 6, bruto: 12322.07, ss: 3731.56 },
+  { m: 7, bruto: 12608.09, ss: 3832.64 }, { m: 8, bruto: 12584.09, ss: 3629.41 }, { m: 9, bruto: 12308.57, ss: 3731.73 },
+  { m: 10, bruto: 11093.46, ss: 3322.82 },
+];
+
+// 2026 en curso: gastos de proveedores (facturas importadas) por cuenta contable + nóminas mensuales. No incluye seguros, renting ni ingresos.
 function pygDerivar2026(transacciones) {
   const tx = (transacciones || []).filter((t) => t.origen === "proveedores" && t.type === "expense" && t.cuenta && aFecha(t.date).getFullYear() === 2026);
-  if (!tx.length) return null;
+  if (!tx.length && !PYG_NOMINAS_2026.length) return null;
   const porCuenta = {};
   let corte = null;
   tx.forEach((t) => {
     porCuenta[t.cuenta] = (porCuenta[t.cuenta] || 0) + Number(t.amount || 0);
     const f = aFecha(t.date); if (!corte || f > corte) corte = f;
   });
+  const sumBruto = PYG_NOMINAS_2026.reduce((a, x) => a + x.bruto, 0);
+  const sumSS = PYG_NOMINAS_2026.reduce((a, x) => a + x.ss, 0);
+  porCuenta["64000000"] = (porCuenta["64000000"] || 0) + sumBruto;
+  porCuenta["64200000"] = (porCuenta["64200000"] || 0) + sumSS;
+  if (!corte) corte = new Date(2026, PYG_NOMINAS_2026[PYG_NOMINAS_2026.length - 1].m, 0);
   const idGrupo = (c) => (c.startsWith("60") ? "aprov" : c.startsWith("64") ? "personal" : c.startsWith("68") ? "amort" : c.startsWith("66") ? "fin" : "otrosgas");
   const grupos = {};
   Object.entries(porCuenta).forEach(([c, v]) => {
@@ -3668,6 +3682,39 @@ function pygDerivar2026(transacciones) {
   const dd = String(corte.getDate()).padStart(2, "0"), mm = String(corte.getMonth() + 1).padStart(2, "0");
   return { anio: 2026, parcial: true, corte: `${dd}/${mm}/2026`, grupos: Object.values(grupos), resultado: null };
 }
+
+// Presupuesto 2026 del club (Excel PRESUPUESTO_GCR_2026). Cada partida agrupa cuentas contables del PyG.
+// t: "i" ingreso, "g" gasto. p25 = presupuesto 2025, e25 = ejecutado 2025, p26 = presupuesto 2026.
+const PRESUP_2026 = [
+  { t: "i", n: "Cuotas socios ordinarias", c: ["70500003"], p25: 305000, e25: 292004.65, p26: 300000 },
+  { t: "i", n: "Green fees", c: ["70000001"], p25: 50500, e25: 50043.61, p26: 51000 },
+  { t: "i", n: "Bolas de prácticas", c: ["70000002"], p25: 4000, e25: 4233, p26: 5000 },
+  { t: "i", n: "Alquileres", c: ["70500004"], p25: 7000, e25: 9640, p26: 10000 },
+  { t: "i", n: "Escuela infantil", c: ["70500006"], p25: 8500, e25: 6537.6, p26: 7000 },
+  { t: "i", n: "Uso de prácticas", c: ["70500007"], p25: 4000, e25: 4128, p26: 4500 },
+  { t: "i", n: "Taquillas", c: ["70500008"], p25: 10000, e25: 9777.55, p26: 10000 },
+  { t: "i", n: "Subvenciones, donaciones y otros ingresos", c: ["74000000"], p25: 21000, e25: 19187.88, p26: 21000 },
+  { t: "i", n: "Ingresos extraordinarios (indemnizaciones seguros)", c: ["77800000"], p25: 0, e25: 2104.14, p26: 0 },
+  { t: "g", n: "Personal (sueldos y Seguridad Social)", c: ["64000000", "64100000", "64200000", "63100000"], p25: 186000, e25: 179887.79, p26: 185000 },
+  { t: "g", n: "Otros gastos de personal", c: ["64900000", "64900001"], p25: 2000, e25: 7277.6, p26: 9000 },
+  { t: "g", n: "Reparación de maquinaria", c: ["62200001"], p25: 15000, e25: 14299.56, p26: 13000 },
+  { t: "g", n: "Renting y financiación de maquinaria", c: ["62100001", "62100002", "62100003", "62100004"], p25: 20000, e25: 21864.7, p26: 14000 },
+  { t: "g", n: "Suministros (electricidad, gasóleo, agua, teléfono, seguridad, basura, informática…)", c: ["62800001", "62800002", "62800003", "62800005", "62900012", "62900005", "62900014", "62900016", "62900020", "62900023"], p25: 50000, e25: 35692.64, p26: 40000 },
+  { t: "g", n: "Seguros", c: ["62500000"], p25: 7000, e25: 10174.08, p26: 8000 },
+  { t: "g", n: "Marketing y publicidad", c: ["62700000", "62900015"], p25: 8000, e25: 8022.82, p26: 11000 },
+  { t: "g", n: "Compras y otros aprovisionamientos", c: ["60200000", "60200002", "60700001"], p25: 6000, e25: 5132.88, p26: 10000 },
+  { t: "g", n: "Campo: semillas y fitosanitarios", c: ["62900010"], p25: 15000, e25: 14183.04, p26: 17000 },
+  { t: "g", n: "Campo: materiales y repuestos", c: ["62900011"], p25: 20000, e25: 25193.91, p26: 26000 },
+  { t: "g", n: "Campo: reparaciones y conservación", c: ["62200000"], p25: 20000, e25: 13743, p26: 20000 },
+  { t: "g", n: "Servicios profesionales, competiciones, oficina, limpieza, fotocopiadora y transportes", c: ["62300000", "62900001", "62900002", "62900008", "62900013", "62400000"], p25: 35000, e25: 30249.07, p26: 30000 },
+  { t: "g", n: "Gastos financieros y bancarios", c: ["62600000", "66230000"], p25: 1500, e25: 1444.57, p26: 1500 },
+  { t: "g", n: "Gastos diversos y de representación", c: ["62900003", "62900024", "62900006"], p25: 8500, e25: 5387.89, p26: 8500 },
+  { t: "g", n: "Robo / gastos excepcionales", c: ["67800000"], p25: 0, e25: 308.73, p26: 0 },
+  { t: "g", n: "Amortización de maquinaria", c: ["68130004", "68130005", "68130006"], p25: 12409.93, e25: 12409.93, p26: 12409.93 },
+  { t: "g", n: "Fondo de indemnización de personal", c: ["67800001"], p25: 3000, e25: 3000, p26: 3000 },
+  { t: "g", n: "Provisión maquinaria nueva", c: ["69590006"], p25: 0, e25: 4600, p26: 0 },
+  { t: "g", n: "Provisión buggys", c: ["69590007"], p25: 0, e25: 4700, p26: 0 },
+];
 
 function PygView({ entidad, transacciones }) {
   const d2026 = useMemo(() => pygDerivar2026(transacciones), [transacciones]);
@@ -3697,7 +3744,7 @@ function PygView({ entidad, transacciones }) {
   const th = { textAlign: "right", padding: "8px 12px", fontSize: 12, color: theme.inkSoft, borderBottom: `1px solid ${theme.border}`, whiteSpace: "nowrap" };
   const td = { padding: "8px 12px", fontSize: 13, color: theme.ink, borderBottom: `1px solid ${theme.border}`, textAlign: "right", whiteSpace: "nowrap" };
   const colorDelta = (d) => (Math.abs(d) < 0.005 ? theme.inkSoft : d > 0 ? theme.success : theme.danger);
-  const etiquetaAnio = (a) => (a === 2026 && d2026 ? `2026 (hasta ${d2026.corte.slice(0, 5)}, solo proveedores)` : String(a));
+  const etiquetaAnio = (a) => (a === 2026 && d2026 ? `2026 (hasta ${d2026.corte.slice(0, 5)}, proveedores y nóminas ene-oct)` : String(a));
   const selAnio = (valor, set, lista = PYG_ANIOS) => (
     <select style={ctl} value={valor} onChange={(e) => set(Number(e.target.value))}>
       {lista.slice().reverse().map((a) => <option key={a} value={a}>{etiquetaAnio(a)}</option>)}
@@ -3795,7 +3842,7 @@ function PygView({ entidad, transacciones }) {
       </p>
 
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", margin: "14px 0" }}>
-        {[["resumen", "Resumen"], ["comparativa", "Comparativa"], ["evolucion", "Evolución"]].map(([id, t]) => (
+        {[["resumen", "Resumen"], ["comparativa", "Comparativa"], ["evolucion", "Evolución"], ["presupuesto", "Presupuesto 2026"]].map(([id, t]) => (
           <button key={id} onClick={() => { setTab(id); if (id === "resumen") { if (anioA === 2026) setAnioA(2025); if (anioB === 2026) setAnioB(2024); } }} style={chip(tab === id)}>{t}</button>
         ))}
       </div>
@@ -3924,7 +3971,7 @@ function PygView({ entidad, transacciones }) {
           </Card>
           {hay2026 && (
             <div style={{ background: "#FBF3E0", color: "#7A5B14", padding: 10, borderRadius: 10, fontSize: 12.5 }}>
-              2026 solo incluye las facturas de proveedores importadas hasta el {d2026.corte}: no tiene sueldos, Seguridad Social, renting, seguros ni ingresos, y los años completos suman todo el ejercicio. Compara con cuidado: sirve para partidas concretas (electricidad, gasóleo, reparaciones, fitosanitarios…), no para el resultado.
+              2026 solo incluye las facturas de proveedores importadas hasta el {d2026.corte} y las nóminas de enero a octubre: no tiene renting, seguros ni ingresos, y los años completos suman todo el ejercicio. Compara con cuidado: sirve para partidas concretas (electricidad, gasóleo, reparaciones, fitosanitarios…), no para el resultado.
             </div>
           )}
           <div style={{ fontSize: 12, color: theme.inkSoft }}>
@@ -3932,6 +3979,82 @@ function PygView({ entidad, transacciones }) {
           </div>
         </div>
       )}
+
+      {tab === "presupuesto" && (() => {
+        const real = {};
+        (d2026?.grupos || []).forEach((g) => g.cuentas.forEach((c) => { real[c.c] = (real[c.c] || 0) + c.i; }));
+        const usadas = new Set(PRESUP_2026.flatMap((x) => x.c));
+        const realLinea = (x) => x.c.reduce((a, c) => a + (real[c] || 0), 0) * (x.t === "g" ? -1 : 1);
+        const sinPartida = Object.entries(real).filter(([c]) => !usadas.has(c) && c.startsWith("6")).reduce((a, [, v]) => a - v, 0);
+        const tot = (t, k) => PRESUP_2026.filter((x) => x.t === t).reduce((a, x) => a + (k === "r" ? realLinea(x) : x[k]), 0);
+        const hoy = new Date();
+        const pctAnio = Math.min(100, (((hoy - new Date(2026, 0, 1)) / 86400000) / 365) * 100);
+        const fila = (x, i) => {
+          const r = realLinea(x);
+          const sinDatos = x.t === "i" || (!x.c.some((c) => real[c] !== undefined));
+          const pct = x.p26 ? (r / x.p26) * 100 : null;
+          const col = x.t === "g" && pct !== null && pct > pctAnio + 10 ? theme.danger : theme.ink;
+          return (
+            <tr key={i}>
+              <td style={{ ...td, textAlign: "left", whiteSpace: "normal", minWidth: 240 }}>{x.n}</td>
+              <td style={td}>{fmtEUR(x.p25)}</td>
+              <td style={td}>{fmtEUR(x.e25)}</td>
+              <td style={{ ...td, fontWeight: 600 }}>{fmtEUR(x.p26)}</td>
+              <td style={td}>{sinDatos ? "—" : fmtEUR(r)}</td>
+              <td style={{ ...td, color: col, fontWeight: 600 }}>{sinDatos || pct === null ? "—" : `${pct.toFixed(0)} %`}</td>
+            </tr>
+          );
+        };
+        const filaTot = (t, nombre) => (
+          <tr style={{ background: theme.surface }}>
+            <td style={{ ...td, textAlign: "left", fontWeight: 700 }}>{nombre}</td>
+            <td style={{ ...td, fontWeight: 700 }}>{fmtEUR(tot(t, "p25"))}</td>
+            <td style={{ ...td, fontWeight: 700 }}>{fmtEUR(tot(t, "e25"))}</td>
+            <td style={{ ...td, fontWeight: 700 }}>{fmtEUR(tot(t, "p26"))}</td>
+            <td style={{ ...td, fontWeight: 700 }}>{t === "g" ? fmtEUR(tot("g", "r") + sinPartida) : "—"}</td>
+            <td style={{ ...td, fontWeight: 700 }}>{t === "g" ? `${(((tot("g", "r") + sinPartida) / tot("g", "p26")) * 100).toFixed(0)} %` : "—"}</td>
+          </tr>
+        );
+        const cab = (
+          <tr>
+            <th style={{ ...th, textAlign: "left" }}>Partida</th><th style={th}>Ppto 2025</th><th style={th}>Ejecutado 2025</th><th style={th}>Ppto 2026</th>
+            <th style={th}>Real 2026{d2026 ? ` (a ${d2026.corte.slice(0, 5)})` : ""}</th><th style={th}>% del ppto 2026</th>
+          </tr>
+        );
+        const dif = (a, b) => `${a - b >= 0 ? "+" : "−"} ${fmtEUR(Math.abs(a - b))}`;
+        return (
+          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(200px,1fr))", gap: 10 }}>
+              {[["Ingresos presupuestados 2026", tot("i", "p26"), `${dif(tot("i", "p26"), tot("i", "e25"))} vs ejecutado 2025`],
+                ["Gastos presupuestados 2026", tot("g", "p26"), `${dif(tot("g", "p26"), tot("g", "e25"))} vs ejecutado 2025`],
+                ["Resultado presupuestado 2026", tot("i", "p26") - tot("g", "p26"), `Ejecutado 2025: ${fmtEUR(tot("i", "e25") - tot("g", "e25"))}`]].map(([t, v, sub]) => (
+                <div key={t} style={{ background: theme.surface, border: `1px solid ${theme.border}`, borderRadius: 12, padding: "12px 14px" }}>
+                  <div style={{ fontSize: 12, color: theme.inkSoft }}>{t}</div>
+                  <div style={{ fontSize: 22, fontWeight: 700, color: theme.ink, marginTop: 2 }}>{fmtEUR(v)}</div>
+                  <div style={{ fontSize: 12, marginTop: 2, color: theme.inkSoft }}>{sub}</div>
+                </div>
+              ))}
+            </div>
+            <div style={{ overflowX: "auto", border: `1px solid ${theme.border}`, borderRadius: 12 }}>
+              <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                <thead>{cab}</thead>
+                <tbody>
+                  {PRESUP_2026.filter((x) => x.t === "i").map(fila)}
+                  {filaTot("i", "TOTAL INGRESOS")}
+                  {PRESUP_2026.filter((x) => x.t === "g").map(fila)}
+                  {Math.abs(sinPartida) > 0.005 && (
+                    <tr><td style={{ ...td, textAlign: "left" }}>Otros gastos sin partida de presupuesto</td><td style={td}>—</td><td style={td}>—</td><td style={td}>—</td><td style={td}>{fmtEUR(sinPartida)}</td><td style={td}>—</td></tr>
+                  )}
+                  {filaTot("g", "TOTAL GASTOS")}
+                </tbody>
+              </table>
+            </div>
+            <div style={{ fontSize: 12, color: theme.inkSoft }}>
+              Hoy llevamos el {pctAnio.toFixed(0)} % del año. El real 2026 solo incluye facturas de proveedores importadas y nóminas de enero a octubre; faltan seguros, renting, amortizaciones y todos los ingresos, así que las partidas sin datos aparecen con «—». En rojo, gastos que ya superan el avance del año en más de 10 puntos.
+            </div>
+          </div>
+        );
+      })()}
 
       {tab === "evolucion" && (
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -3982,7 +4105,7 @@ function PygView({ entidad, transacciones }) {
       )}
 
       <div style={{ fontSize: 11.5, color: theme.inkSoft, marginTop: 14, lineHeight: 1.5 }}>
-        {d2026 ? `* 2026 incluye solo facturas de proveedores importadas hasta el ${d2026.corte}. ` : ""}Fuente: PyG de la gestoría (listados de feb. 2022 a feb. 2026). De cada año se usa su presentación más reciente: los datos de 2022 y 2023 vienen reformulados en el PyG del año siguiente, con pequeñas diferencias respecto a la primera presentación.
+        {d2026 ? `* 2026 incluye facturas de proveedores importadas hasta el ${d2026.corte} y nóminas de enero a octubre. ` : ""}Fuente: PyG de la gestoría (listados de feb. 2022 a feb. 2026). De cada año se usa su presentación más reciente: los datos de 2022 y 2023 vienen reformulados en el PyG del año siguiente, con pequeñas diferencias respecto a la primera presentación.
       </div>
     </div>
   );
