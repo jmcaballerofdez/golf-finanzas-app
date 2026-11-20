@@ -296,6 +296,7 @@ function Sidebar({ active, setActive, onLogout, userEmail, esSuper }) {
     { id: "resumen", label: "Resumen", icon: LayoutDashboard },
     { id: "transacciones", label: "Transacciones", icon: Receipt },
     { id: "informes", label: "Informes", icon: FileText },
+    { id: "pyg", label: "PyG anual", icon: TrendingUp },
     { id: "gestoria", label: "Gestoría", icon: Download },
     { id: "ventas_gcr", label: "Ventas", icon: ShoppingCart },
     { id: "presupuestos", label: "Presupuestos", icon: Wallet },
@@ -3238,6 +3239,359 @@ function GestoriaView({ transacciones, entidad }) {
   );
 }
 
+/* ============================ PyG ANUAL (histórico contable del club) ============================ */
+// Cuenta de Pérdidas y Ganancias de Golf Ciudad Real C.D., años 2020-2025, tomada de los PDF de la gestoría.
+// De cada año se usa la presentación más reciente (la gestoría reformula el año anterior en el PDF siguiente).
+const PYG_DATOS = {"2025":{"anio":2025,"fuente":"2024-25","fecha":"10/02/2026","grupos":[{"id":"cifra","total":376364.41,"cuentas":[{"c":"70000001","n":"GREEN FEES","i":50043.61},{"c":"70000002","n":"BOLAS DE PRACTICAS","i":4233.0},{"c":"70500003","n":"CUOTAS SOCIOS ORDINARIAS","i":292004.65},{"c":"70500004","n":"ALQUILERES","i":9640.0},{"c":"70500006","n":"ESCUELA INFANTIL","i":6537.6},{"c":"70500007","n":"USO DE PRACTICAS","i":4128.0},{"c":"70500008","n":"TAQUILLAS SOCIOS","i":9777.55}]},{"id":"aprov","total":-5132.88,"cuentas":[{"c":"60200000","n":"COMPRAS DE OTROS APROVISIONAM","i":-5132.88}]},{"id":"otrosing","total":19187.88,"cuentas":[{"c":"74000000","n":"SUBV.,DONA. Y LEGADOS EXPLOTA.","i":19187.88}]},{"id":"personal","total":-187149.72,"cuentas":[{"c":"64000000","n":"SUELDOS Y SALARIOS","i":-139922.14},{"c":"64200000","n":"SEGURIDAD SOCIAL A CARGO DE LA","i":-39949.98},{"c":"64900001","n":"OTROS GASTOS DE PERSONAL","i":-7277.6}]},{"id":"otrosgas","total":-189570.95,"cuentas":[{"c":"62100001","n":"RENTING","i":-21864.7},{"c":"62200000","n":"REPARACIONES Y CONSERVACIÓN","i":-13743.0},{"c":"62200001","n":"REPARACION Y CONSER MAQUINARI","i":-14299.56},{"c":"62300000","n":"SERVICIOS PROFESIONALES INDEP.","i":-4492.32},{"c":"62400000","n":"TRANSPORTES","i":-2756.53},{"c":"62500000","n":"PRIMAS DE SEGUROS","i":-10174.08},{"c":"62600000","n":"SERVICIOS BANCARIOS Y SIMILARE","i":-1444.57},{"c":"62700000","n":"PUBLICID., PROPAGANDA Y RR.PP.","i":-8022.82},{"c":"62800001","n":"SUMINISTRO AGUA","i":-798.29},{"c":"62800002","n":"GASOLEO","i":-8551.57},{"c":"62800003","n":"ELECTRICIDAD","i":-12172.74},{"c":"62900001","n":"GASTOS COMPETICIONES CLUB","i":-21161.57},{"c":"62900002","n":"MATERIAL DE OFICINA","i":-389.61},{"c":"62900003","n":"GASTOS DE REPRESENTACION","i":-4769.72},{"c":"62900005","n":"SEGURIDAD Y PREVENCION","i":-3199.24},{"c":"62900008","n":"LIMPIEZA E HIGIENE","i":-594.67},{"c":"62900010","n":"SEMILLAS, FITOSANITARIOS, ...","i":-14183.04},{"c":"62900011","n":"MATERIALES, REPUESTOS, ETC...","i":-25193.91},{"c":"62900012","n":"TELEFONO","i":-1307.39},{"c":"62900013","n":"ALQUILER FOTOCOPIADORA","i":-854.37},{"c":"62900014","n":"RECOGIDA BASURA","i":-1031.44},{"c":"62900016","n":"SISTEMA CENTRAL DE HANDICAPS","i":-551.76},{"c":"62900020","n":"MANTENIMIENTO INFORMATICO","i":-7330.21},{"c":"62900023","n":"DONATIVOS","i":-750.0},{"c":"62900024","n":"GASTOS GOLF","i":-618.17},{"c":"63100000","n":"OTROS TRIBUTOS","i":-15.67},{"c":"69590006","n":"PROV. MAQUINARIA NUEVA","i":-4600.0},{"c":"69590007","n":"PROV. COMPRA BUGGY","i":-4700.0}]},{"id":"amort","total":-12409.93,"cuentas":[{"c":"68130004","n":"DOT. AMORT. MAQUINARIA","i":-3827.38},{"c":"68130005","n":"DOT. AMORT. MAQUINARIA","i":-7221.3},{"c":"68130006","n":"DOT. AMORT. MAQUINARIA","i":-1361.25}]},{"id":"otrosres","total":-1204.59,"cuentas":[{"c":"67800000","n":"GASTOS EXCEPCIONALES","i":-308.73},{"c":"67800001","n":"FONDO INDEMNIZACIONES LABORALE","i":-3000.0},{"c":"77800000","n":"INGRESOS EXCEPCIONALES","i":2104.14}]}],"explotacion":84.22,"antesImpuestos":84.22,"resultado":84.22},"2024":{"anio":2024,"fuente":"2024-25","fecha":"10/02/2026","grupos":[{"id":"cifra","total":364883.6,"cuentas":[{"c":"70000001","n":"GREEN FEES","i":49771.5},{"c":"70000002","n":"BOLAS DE PRACTICAS","i":2375.45},{"c":"70500003","n":"CUOTAS SOCIOS ORDINARIAS","i":285254.5},{"c":"70500004","n":"ALQUILERES","i":7856.7},{"c":"70500006","n":"ESCUELA INFANTIL","i":6955.5},{"c":"70500007","n":"USO DE PRACTICAS","i":2636.0},{"c":"70500008","n":"TAQUILLAS SOCIOS","i":10033.95}]},{"id":"aprov","total":-25514.42,"cuentas":[{"c":"60200000","n":"COMPRAS DE OTROS APROVISIONAM","i":-25173.39},{"c":"60200002","n":"MATERIALES, REPUESTOS,ETC...","i":-341.03}]},{"id":"otrosing","total":16940.24,"cuentas":[{"c":"74000000","n":"SUBV.,DONA. Y LEGADOS EXPLOTA.","i":16940.24}]},{"id":"personal","total":-178624.84,"cuentas":[{"c":"64000000","n":"SUELDOS Y SALARIOS","i":-140526.09},{"c":"64100000","n":"INDEMNIZACIONES","i":-1402.2},{"c":"64200000","n":"SEGURIDAD SOCIAL A CARGO DE LA","i":-36643.54},{"c":"64900000","n":"OTROS GASTOS SOCIALES","i":-53.01}]},{"id":"otrosgas","total":-205691.84,"cuentas":[{"c":"62100001","n":"RENTING","i":-20182.8},{"c":"62200000","n":"REPARACIONES Y CONSERVACIÓN","i":-45674.67},{"c":"62200001","n":"REPARACION Y CONSER MAQUINARI","i":-25444.58},{"c":"62300000","n":"SERVICIOS PROFESIONALES INDEP.","i":-4369.92},{"c":"62400000","n":"TRANSPORTES","i":-2217.37},{"c":"62500000","n":"PRIMAS DE SEGUROS","i":-4735.6},{"c":"62600000","n":"SERVICIOS BANCARIOS Y SIMILARE","i":-1373.98},{"c":"62700000","n":"PUBLICID., PROPAGANDA Y RR.PP.","i":-9022.64},{"c":"62800001","n":"SUMINISTRO AGUA","i":-1281.48},{"c":"62800002","n":"GASOLEO","i":-10953.39},{"c":"62800003","n":"ELECTRICIDAD","i":-40950.49},{"c":"62900001","n":"GASTOS COMPETICIONES CLUB","i":-21951.41},{"c":"62900002","n":"MATERIAL DE OFICINA","i":-545.95},{"c":"62900003","n":"GASTOS DE REPRESENTACION","i":-2698.22},{"c":"62900005","n":"SEGURIDAD Y PREVENCION","i":-1600.79},{"c":"62900008","n":"LIMPIEZA E HIGIENE","i":-2238.7},{"c":"62900010","n":"SEMILLAS, FITOSANITARIOS, ...","i":-16936.11},{"c":"62900011","n":"MATERIALES, REPUESTOS, ETC...","i":-39797.11},{"c":"62900012","n":"TELEFONO","i":-824.09},{"c":"62900013","n":"ALQUILER FOTOCOPIADORA","i":-952.86},{"c":"62900014","n":"RECOGIDA BASURA","i":-982.36},{"c":"62900016","n":"SISTEMA CENTRAL DE HANDICAPS","i":-551.76},{"c":"62900020","n":"MANTENIMIENTO INFORMATICO","i":-8060.22},{"c":"62900023","n":"DONATIVOS","i":-1820.0},{"c":"62900024","n":"GASTOS GOLF","i":-8135.0},{"c":"63100000","n":"OTROS TRIBUTOS","i":-31.34},{"c":"79540000","n":"EXC. PROVI. CONTRATOS ONEROSOS","i":67641.0}]},{"id":"amort","total":-12409.93,"cuentas":[{"c":"68130004","n":"DOT. AMORT. MAQUINARIA","i":-3827.38},{"c":"68130005","n":"DOT. AMORT. MAQUINARIA","i":-7221.3},{"c":"68130006","n":"DOT. AMORT. MAQUINARIA","i":-1361.25}]},{"id":"otrosres","total":12791.19,"cuentas":[{"c":"67800001","n":"FONDO INDEMNIZACIONES LABORALE","i":-3000.0},{"c":"77800000","n":"INGRESOS EXCEPCIONALES","i":15791.19}]}],"explotacion":-27626.0,"antesImpuestos":-27626.0,"resultado":-27626.0},"2023":{"anio":2023,"fuente":"2023-24","fecha":"25/02/2025","grupos":[{"id":"cifra","total":381134.28,"cuentas":[{"c":"70000001","n":"GREEN FEES","i":48102.78},{"c":"70000002","n":"BOLAS DE PRACTICAS","i":3113.86},{"c":"70500003","n":"CUOTAS SOCIOS ORDINARIAS","i":300641.0},{"c":"70500004","n":"ALQUILERES","i":6817.0},{"c":"70500006","n":"ESCUELA INFANTIL","i":8153.5},{"c":"70500007","n":"USO DE PRACTICAS","i":4376.14},{"c":"70500008","n":"TAQUILLAS SOCIOS","i":9930.0}]},{"id":"aprov","total":-18581.97,"cuentas":[{"c":"60200000","n":"COMPRAS DE OTROS APROVISIONAM","i":-1214.84},{"c":"60700001","n":"SERVICIOS DE JARDINERIA","i":-17367.13}]},{"id":"otrosing","total":23230.58,"cuentas":[{"c":"74000000","n":"SUBV.,DONA. Y LEGADOS EXPLOTA.","i":23230.58}]},{"id":"personal","total":-151149.32,"cuentas":[{"c":"64000000","n":"SUELDOS Y SALARIOS","i":-135672.3},{"c":"64200000","n":"SEGURIDAD SOCIAL A CARGO DE LA","i":-13987.02},{"c":"64900000","n":"OTROS GASTOS SOCIALES","i":-1490.0}]},{"id":"otrosgas","total":-219205.84,"cuentas":[{"c":"62100001","n":"RENTING","i":-1681.9},{"c":"62200000","n":"REPARACIONES Y CONSERVACIÓN","i":-18563.01},{"c":"62200001","n":"REPARACION Y CONSER MAQUINARI","i":-11415.17},{"c":"62300000","n":"SERVICIOS PROFESIONALES INDEP.","i":-4238.64},{"c":"62400000","n":"TRANSPORTES","i":-2228.38},{"c":"62500000","n":"PRIMAS DE SEGUROS","i":-4358.27},{"c":"62600000","n":"SERVICIOS BANCARIOS Y SIMILARE","i":-1244.86},{"c":"62700000","n":"PUBLICID., PROPAGANDA Y RR.PP.","i":-6924.38},{"c":"62800001","n":"SUMINISTRO AGUA","i":-922.91},{"c":"62800002","n":"GASOLEO","i":-6859.18},{"c":"62800003","n":"ELECTRICIDAD","i":-61500.84},{"c":"62900001","n":"GASTOS COMPETICIONES CLUB","i":-23535.12},{"c":"62900002","n":"MATERIAL DE OFICINA","i":-285.65},{"c":"62900003","n":"GASTOS DE REPRESENTACION","i":-3907.08},{"c":"62900005","n":"SEGURIDAD Y PREVENCION","i":-1478.37},{"c":"62900008","n":"LIMPIEZA E HIGIENE","i":-1325.83},{"c":"62900010","n":"SEMILLAS, FITOSANITARIOS, ...","i":-26217.09},{"c":"62900011","n":"MATERIALES, REPUESTOS, ETC...","i":-14337.58},{"c":"62900012","n":"TELEFONO","i":-633.67},{"c":"62900013","n":"ALQUILER FOTOCOPIADORA","i":-925.13},{"c":"62900014","n":"RECOGIDA BASURA","i":-946.4},{"c":"62900016","n":"SISTEMA CENTRAL DE HANDICAPS","i":-551.76},{"c":"62900020","n":"MANTENIMIENTO INFORMATICO","i":-5297.13},{"c":"62900023","n":"DONATIVOS","i":-750.0},{"c":"62900024","n":"GASTOS GOLF","i":-4264.81},{"c":"63100000","n":"OTROS TRIBUTOS","i":-62.68},{"c":"69590004","n":"PROVISION VALLADO LAGOS","i":-10000.0},{"c":"69590005","n":"PROV. ARREGLO MAQUINARIA CALL","i":-13000.0},{"c":"79540000","n":"EXC. PROVI. CONTRATOS ONEROSOS","i":8250.0}]},{"id":"amort","total":-12409.93,"cuentas":[{"c":"68130004","n":"DOT. AMORT. MAQUINARIA","i":-3827.38},{"c":"68130005","n":"DOT. AMORT. MAQUINARIA","i":-7221.3},{"c":"68130006","n":"DOT. AMORT. MAQUINARIA","i":-1361.25}]},{"id":"otrosres","total":5782.54,"cuentas":[{"c":"67800001","n":"FONDO INDEMNIZACIONES LABORALE","i":-4000.0},{"c":"77800000","n":"INGRESOS EXCEPCIONALES","i":9782.54}]}],"explotacion":8800.34,"antesImpuestos":8800.34,"resultado":8800.34},"2022":{"anio":2022,"fuente":"2022-23","fecha":"09/02/2024","grupos":[{"id":"cifra","total":345812.32,"cuentas":[{"c":"70000001","n":"GREEN FEES","i":52163.97},{"c":"70000002","n":"BOLAS DE PRACTICAS","i":4383.75},{"c":"70500003","n":"CUOTAS SOCIOS ORDINARIAS","i":261533.65},{"c":"70500004","n":"ALQUILERES","i":6870.45},{"c":"70500006","n":"ESCUELA INFANTIL","i":8719.5},{"c":"70500007","n":"USO DE PRACTICAS","i":2305.0},{"c":"70500008","n":"TAQUILLAS SOCIOS","i":9836.0}]},{"id":"aprov","total":-18513.75,"cuentas":[{"c":"60200000","n":"COMPRAS DE OTROS APROVISIONAM","i":-1383.78},{"c":"60700001","n":"SERVICIOS DE JARDINERIA","i":-17129.97}]},{"id":"otrosing","total":27728.79,"cuentas":[{"c":"74000000","n":"SUBV.,DONA. Y LEGADOS EXPLOTA.","i":27728.79}]},{"id":"personal","total":-145163.68,"cuentas":[{"c":"64000000","n":"SUELDOS Y SALARIOS","i":-120282.07},{"c":"64200000","n":"SEGURIDAD SOCIAL A CARGO DE LA","i":-24791.61},{"c":"64900000","n":"OTROS GASTOS SOCIALES","i":-90.0}]},{"id":"otrosgas","total":-231258.07,"cuentas":[{"c":"62100001","n":"RENTING","i":-274.98},{"c":"62100003","n":"FINANCIACION TRIPLETA HELICOID","i":-1920.01},{"c":"62100004","n":"FINANCIACION COCHE YAMAHA","i":-66.86},{"c":"62200000","n":"REPARACIONES Y CONSERVACIÓN","i":-29565.94},{"c":"62200001","n":"REPARACION Y CONSER MAQUINARI","i":-9000.63},{"c":"62300000","n":"SERVICIOS PROFESIONALES INDEP.","i":-4010.04},{"c":"62400000","n":"TRANSPORTES","i":-2100.5},{"c":"62500000","n":"PRIMAS DE SEGUROS","i":-3949.67},{"c":"62600000","n":"SERVICIOS BANCARIOS Y SIMILARE","i":-116.87},{"c":"62700000","n":"PUBLICID., PROPAGANDA Y RR.PP.","i":-7479.34},{"c":"62800001","n":"SUMINISTRO AGUA","i":-537.27},{"c":"62800002","n":"GASOLEO","i":-8723.61},{"c":"62800003","n":"ELECTRICIDAD","i":-82077.59},{"c":"62800005","n":"TELEVISION DIGITAL","i":-710.0},{"c":"62900001","n":"GASTOS COMPETICIONES CLUB","i":-24778.67},{"c":"62900002","n":"MATERIAL DE OFICINA","i":-1656.0},{"c":"62900003","n":"GASTOS DE REPRESENTACION","i":-3622.58},{"c":"62900005","n":"SEGURIDAD Y PREVENCION","i":-7555.09},{"c":"62900008","n":"LIMPIEZA E HIGIENE","i":-871.27},{"c":"62900010","n":"SEMILLAS, FITOSANITARIOS, ...","i":-16426.21},{"c":"62900011","n":"MATERIALES, REPUESTOS, ETC...","i":-18802.19},{"c":"62900012","n":"TELEFONO","i":-1035.75},{"c":"62900013","n":"ALQUILER FOTOCOPIADORA","i":-1553.0},{"c":"62900014","n":"RECOGIDA BASURA","i":-901.28},{"c":"62900016","n":"SISTEMA CENTRAL DE HANDICAPS","i":-551.76},{"c":"62900020","n":"MANTENIMIENTO INFORMATICO","i":-3735.7},{"c":"62900023","n":"DONATIVOS","i":-750.0},{"c":"62900024","n":"GASTOS GOLF","i":-3562.92},{"c":"63100000","n":"OTROS TRIBUTOS","i":-31.34},{"c":"79540000","n":"EXC. PROVI. CONTRATOS ONEROSOS","i":5109.0}]},{"id":"amort","total":-7684.83,"cuentas":[{"c":"68130004","n":"DOT. AMORT. MAQUINARIA","i":-2499.86},{"c":"68130005","n":"DOT. AMORT. MAQUINARIA","i":-4352.56},{"c":"68130006","n":"DOT. AMORT. MAQUINARIA","i":-832.41}]},{"id":"otrosres","total":-4000.0,"cuentas":[{"c":"67800001","n":"FONDO INDEMNIZACIONES LABORALE","i":-4000.0}]},{"id":"fin","total":-6.86,"cuentas":[{"c":"66230000","n":"INTE. DEUDAS CON ENT. CRÉDITO","i":-6.86}]}],"explotacion":-33079.22,"antesImpuestos":-33086.08,"resultado":-33086.08},"2021":{"anio":2021,"fuente":"2021-22","fecha":"20/02/2023","grupos":[{"id":"cifra","total":341817.08,"cuentas":[{"c":"70000001","n":"GREEN FEES","i":48746.02},{"c":"70000002","n":"BOLAS DE PRACTICAS","i":6035.0},{"c":"70500003","n":"CUOTAS SOCIOS ORDINARIAS","i":255390.56},{"c":"70500004","n":"ALQUILERES","i":7180.0},{"c":"70500006","n":"ESCUELA INFANTIL","i":10529.5},{"c":"70500007","n":"USO DE PRACTICAS","i":3823.0},{"c":"70500008","n":"TAQUILLAS SOCIOS","i":10113.0}]},{"id":"aprov","total":-23992.17,"cuentas":[{"c":"60200000","n":"COMPRAS DE OTROS APROVISIONAM","i":-9472.17},{"c":"60700001","n":"SERVICIOS DE JARDINERIA","i":-14520.0}]},{"id":"otrosing","total":25838.8,"cuentas":[{"c":"74000000","n":"SUBV.,DONA. Y LEGADOS EXPLOTA.","i":25838.8}]},{"id":"personal","total":-136650.45,"cuentas":[{"c":"64000000","n":"SUELDOS Y SALARIOS","i":-104777.67},{"c":"64200000","n":"SEGURIDAD SOCIAL A CARGO DE LA","i":-30406.78},{"c":"64900000","n":"OTROS GASTOS SOCIALES","i":-1466.0}]},{"id":"otrosgas","total":-208417.1,"cuentas":[{"c":"62100001","n":"RENTING","i":-5824.35},{"c":"62100002","n":"FINANCIACION CORTACESPED","i":-2800.94},{"c":"62100003","n":"FINANCIACION TRIPLETA HELICOID","i":-5760.0},{"c":"62100004","n":"FINANCIACION COCHE YAMAHA","i":-1800.0},{"c":"62200000","n":"REPARACIONES Y CONSERVACIÓN","i":-18544.65},{"c":"62200001","n":"REPARACION Y CONSER MAQUINARI","i":-4564.41},{"c":"62300000","n":"SERVICIOS PROFESIONALES INDEP.","i":-4516.82},{"c":"62500000","n":"PRIMAS DE SEGUROS","i":-4363.07},{"c":"62600000","n":"SERVICIOS BANCARIOS Y SIMILARE","i":-720.74},{"c":"62700000","n":"PUBLICID., PROPAGANDA Y RR.PP.","i":-3361.01},{"c":"62800001","n":"SUMINISTRO AGUA","i":-380.9},{"c":"62800002","n":"GASOLEO","i":-7099.06},{"c":"62800003","n":"ELECTRICIDAD","i":-41628.56},{"c":"62800005","n":"TELEVISION DIGITAL","i":-40.0},{"c":"62900001","n":"GASTOS COMPETICIONES CLUB","i":-23261.76},{"c":"62900002","n":"MATERIAL DE OFICINA","i":-1326.69},{"c":"62900003","n":"GASTOS DE REPRESENTACION","i":-843.95},{"c":"62900005","n":"SEGURIDAD Y PREVENCION","i":-6335.92},{"c":"62900006","n":"OTROS GASTOS","i":-176.61},{"c":"62900008","n":"LIMPIEZA E HIGIENE","i":-1176.7},{"c":"62900010","n":"SEMILLAS, FITOSANITARIOS, ...","i":-12896.27},{"c":"62900011","n":"MATERIALES, REPUESTOS, ETC...","i":-13976.97},{"c":"62900012","n":"TELEFONO","i":-2369.29},{"c":"62900013","n":"ALQUILER FOTOCOPIADORA","i":-1590.25},{"c":"62900014","n":"RECOGIDA BASURA","i":-846.28},{"c":"62900015","n":"CARTELERIA E IMPRENTA DIGITAL","i":-2608.76},{"c":"62900016","n":"SISTEMA CENTRAL DE HANDICAPS","i":-551.76},{"c":"62900020","n":"MANTENIMIENTO INFORMATICO","i":-3375.12},{"c":"62900023","n":"DONATIVOS","i":-750.0},{"c":"62900024","n":"GASTOS GOLF","i":-1894.92},{"c":"63100000","n":"OTROS TRIBUTOS","i":-31.34},{"c":"69590003","n":"PROVISION RENTING MAQUINARIA","i":-33000.0}]},{"id":"amort","total":0,"cuentas":[]},{"id":"excprov","total":4500.0,"cuentas":[{"c":"79520000","n":"EXC. PROV. OTRAS RESPONSABILI.","i":4500.0}]},{"id":"otrosres","total":4287.05,"cuentas":[{"c":"67800001","n":"FONDO INDEMNIZACIONES LABORALE","i":-4000.0},{"c":"77800000","n":"INGRESOS EXCEPCIONALES","i":8287.05}]},{"id":"fin","total":-101.84,"cuentas":[{"c":"66230000","n":"INTE. DEUDAS CON ENT. CRÉDITO","i":-101.84}]}],"explotacion":7383.21,"antesImpuestos":7281.37,"resultado":7281.37},"2020":{"anio":2020,"fuente":"2020-21","fecha":"11/02/2022","grupos":[{"id":"cifra","total":304212.95,"cuentas":[{"c":"70000001","n":"GREEN FEES","i":20612.8},{"c":"70500003","n":"CUOTAS SOCIOS ORDINARIAS","i":259822.0},{"c":"70500004","n":"ALQUILERES","i":14787.4},{"c":"70500006","n":"ESCUELA INFANTIL","i":5242.75},{"c":"70500007","n":"USO DE PRACTICAS","i":3727.0},{"c":"70500009","n":"G.F.SOCIOS","i":21.0}]},{"id":"aprov","total":-29403.0,"cuentas":[{"c":"60200000","n":"COMPRAS DE OTROS APROVISIONAM","i":-14883.0},{"c":"60700001","n":"SERVICIOS DE JARDINERIA","i":-14520.0}]},{"id":"otrosing","total":12077.83,"cuentas":[{"c":"74000000","n":"SUBV.,DONA. Y LEGADOS EXPLOTA.","i":12077.83}]},{"id":"personal","total":-117759.27,"cuentas":[{"c":"64000000","n":"SUELDOS Y SALARIOS","i":-90486.42},{"c":"64200000","n":"SEGURIDAD SOCIAL A CARGO DE LA","i":-25318.24},{"c":"64900000","n":"OTROS GASTOS SOCIALES","i":-1954.61}]},{"id":"otrosgas","total":-149750.96,"cuentas":[{"c":"62100001","n":"RENTING","i":-3916.18},{"c":"62100002","n":"FINANCIACION CORTACESPED","i":-4801.2},{"c":"62100003","n":"FINANCIACION TRIPLETA HELICOID","i":-5760.0},{"c":"62100004","n":"FINANCIACION COCHE YAMAHA","i":-2283.44},{"c":"62200000","n":"REPARACIONES Y CONSERVACIÓN","i":-12663.55},{"c":"62200001","n":"REPARACION Y CONSER MAQUINARI","i":-4606.61},{"c":"62300000","n":"SERVICIOS PROFESIONALES INDEP.","i":-3765.36},{"c":"62400000","n":"TRANSPORTES","i":-22.03},{"c":"62500000","n":"PRIMAS DE SEGUROS","i":-4395.55},{"c":"62600000","n":"SERVICIOS BANCARIOS Y SIMILARE","i":-965.13},{"c":"62700000","n":"PUBLICID., PROPAGANDA Y RR.PP.","i":-1284.82},{"c":"62800001","n":"SUMINISTRO AGUA","i":-258.12},{"c":"62800002","n":"GASOLEO","i":-3912.11},{"c":"62800003","n":"ELECTRICIDAD","i":-24664.18},{"c":"62800005","n":"TELEVISION DIGITAL","i":-100.0},{"c":"62900001","n":"GASTOS COMPETICIONES CLUB","i":-9904.1},{"c":"62900002","n":"MATERIAL DE OFICINA","i":-1304.62},{"c":"62900005","n":"SEGURIDAD Y PREVENCION","i":-6949.92},{"c":"62900006","n":"OTROS GASTOS","i":-783.42},{"c":"62900008","n":"LIMPIEZA E HIGIENE","i":-2373.88},{"c":"62900010","n":"SEMILLAS, FITOSANITARIOS, ...","i":-10636.31},{"c":"62900011","n":"MATERIALES, REPUESTOS, ETC...","i":-10708.94},{"c":"62900012","n":"TELEFONO","i":-947.85},{"c":"62900013","n":"ALQUILER FOTOCOPIADORA","i":-670.49},{"c":"62900014","n":"RECOGIDA BASURA","i":-423.14},{"c":"62900015","n":"CARTELERIA E IMPRENTA DIGITAL","i":-382.36},{"c":"62900016","n":"SISTEMA CENTRAL DE HANDICAPS","i":-413.82},{"c":"62900020","n":"MANTENIMIENTO INFORMATICO","i":-736.73},{"c":"62900024","n":"GASTOS GOLF","i":-617.1},{"c":"69590001","n":"PROV. CONST. NAVE MAQUINARIA","i":-25000.0},{"c":"69590002","n":"PROV. PINTURA CASA CLUB","i":-4500.0}]},{"id":"excprov","total":0,"cuentas":[]},{"id":"otrosres","total":-3000.0,"cuentas":[{"c":"67800001","n":"FONDO INDEMNIZACIONES LABORALE","i":-3000.0}]},{"id":"fin","total":-274.02,"cuentas":[{"c":"66230000","n":"INTE. DEUDAS CON ENT. CRÉDITO","i":-274.02}]}],"explotacion":16377.55,"antesImpuestos":16103.53,"resultado":16103.53}};
+
+const PYG_ANIOS = [2020, 2021, 2022, 2023, 2024, 2025];
+const PYG_GRUPOS = [
+  ["cifra", "Cifra de negocios (cuotas, green fees, etc.)"],
+  ["otrosing", "Otros ingresos de explotación (subvenciones y donaciones)"],
+  ["aprov", "Aprovisionamientos"],
+  ["personal", "Gastos de personal"],
+  ["otrosgas", "Otros gastos de explotación"],
+  ["amort", "Amortización de inmovilizado"],
+  ["excprov", "Excesos de provisiones"],
+  ["otrosres", "Otros resultados (excepcionales)"],
+  ["fin", "Gastos financieros"],
+];
+const PYG_NOMBRES = {
+  "60200000": "Compras de otros aprovisionamientos", "60200002": "Materiales y repuestos", "60700001": "Servicios de jardinería",
+  "62100001": "Renting", "62100002": "Financiación cortacésped", "62100003": "Financiación tripleta helicoidal", "62100004": "Financiación coche Yamaha",
+  "62200000": "Reparaciones y conservación", "62200001": "Reparación y conservación de maquinaria", "62300000": "Servicios profesionales independientes",
+  "62400000": "Transportes", "62500000": "Primas de seguros", "62600000": "Servicios bancarios", "62700000": "Publicidad, propaganda y RR.PP.",
+  "62800001": "Suministro de agua", "62800002": "Gasóleo", "62800003": "Electricidad", "62800005": "Televisión digital",
+  "62900001": "Gastos de competiciones del club", "62900002": "Material de oficina", "62900003": "Gastos de representación", "62900005": "Seguridad y prevención",
+  "62900006": "Otros gastos", "62900008": "Limpieza e higiene", "62900010": "Semillas, fitosanitarios y abonos", "62900011": "Materiales y repuestos",
+  "62900012": "Teléfono", "62900013": "Alquiler de fotocopiadora", "62900014": "Recogida de basura", "62900015": "Cartelería e imprenta digital",
+  "62900016": "Sistema central de hándicaps", "62900020": "Mantenimiento informático", "62900023": "Donativos", "62900024": "Gastos de golf",
+  "63100000": "Otros tributos", "64000000": "Sueldos y salarios", "64100000": "Indemnizaciones", "64200000": "Seguridad Social a cargo de la empresa",
+  "64900000": "Otros gastos sociales", "64900001": "Otros gastos de personal", "66230000": "Intereses de deudas con entidades de crédito",
+  "67800000": "Gastos excepcionales", "67800001": "Fondo de indemnizaciones laborales",
+  "68130004": "Amortización maquinaria (1)", "68130005": "Amortización maquinaria (2)", "68130006": "Amortización maquinaria (3)",
+  "69590001": "Prov. construcción nave de maquinaria", "69590002": "Prov. pintura casa club", "69590003": "Prov. renting maquinaria",
+  "69590004": "Prov. vallado de lagos", "69590005": "Prov. arreglo maquinaria", "69590006": "Prov. maquinaria nueva", "69590007": "Prov. compra de buggy",
+  "70000001": "Green fees", "70000002": "Bolas de prácticas", "70500003": "Cuotas de socios ordinarios", "70500004": "Alquileres",
+  "70500006": "Escuela infantil", "70500007": "Uso de prácticas", "70500008": "Taquillas de socios", "70500009": "Green fees de socios",
+  "74000000": "Subvenciones, donaciones y legados", "77800000": "Ingresos excepcionales", "79520000": "Exceso de provisiones (otras responsabilidades)",
+  "79540000": "Exceso de provisiones (contratos onerosos)",
+};
+const pygNombre = (c, n) => PYG_NOMBRES[c] || n;
+const pygGrupo = (a, id) => (PYG_DATOS[a]?.grupos || []).find((g) => g.id === id);
+const pygTotal = (a, id) => pygGrupo(a, id)?.total || 0;
+const pygCuenta = (a, code) => {
+  for (const g of PYG_DATOS[a]?.grupos || []) { const c = g.cuentas.find((x) => x.c === code); if (c) return c.i; }
+  return 0;
+};
+const pygIngresos = (a) => pygTotal(a, "cifra") + pygTotal(a, "otrosing");
+const pygGastos = (a) => -(pygTotal(a, "aprov") + pygTotal(a, "personal") + pygTotal(a, "otrosgas") + pygTotal(a, "amort"));
+const pygPct = (a, b) => (b ? ((a - b) / Math.abs(b)) * 100 : null);
+const pygFmtPct = (p) => (p === null || p === undefined || !isFinite(p) ? "—" : `${p > 0 ? "+" : ""}${p.toFixed(1).replace(".", ",")} %`);
+const pygCorto = (n) => (Math.abs(n) >= 1000 ? `${Math.round(n / 1000)} k` : String(Math.round(n)));
+
+function PygView({ entidad }) {
+  const [tab, setTab] = useState("resumen");
+  const [anioA, setAnioA] = useState(2025);
+  const [anioB, setAnioB] = useState(2024);
+  const [abiertos, setAbiertos] = useState({});
+  const [partida, setPartida] = useState("62800003");
+  const [exportando, setExportando] = useState(false);
+
+  if (entidad === "jmcf") {
+    return (
+      <Card>
+        <div style={{ fontWeight: 700, color: theme.ink, marginBottom: 6 }}>PyG anual</div>
+        <div style={{ color: theme.inkSoft, fontSize: 14 }}>Estos datos son de la contabilidad de Golf Ciudad Real C.D. Cambia arriba a <b>Golf Ciudad Real (club)</b> para verlos.</div>
+      </Card>
+    );
+  }
+
+  const ctl = { padding: "8px 10px", borderRadius: 8, border: `1px solid ${theme.border}`, fontSize: 14, color: theme.ink, background: "#fff" };
+  const chip = (activo) => ({
+    padding: "6px 14px", borderRadius: 999, fontSize: 13, fontWeight: 600, cursor: "pointer",
+    border: `1px solid ${activo ? theme.pine : theme.border}`, background: activo ? theme.pine : "#fff", color: activo ? "#fff" : theme.ink,
+  });
+  const th = { textAlign: "right", padding: "8px 12px", fontSize: 12, color: theme.inkSoft, borderBottom: `1px solid ${theme.border}`, whiteSpace: "nowrap" };
+  const td = { padding: "8px 12px", fontSize: 13, color: theme.ink, borderBottom: `1px solid ${theme.border}`, textAlign: "right", whiteSpace: "nowrap" };
+  const colorDelta = (d) => (Math.abs(d) < 0.005 ? theme.inkSoft : d > 0 ? theme.success : theme.danger);
+  const selAnio = (valor, set) => (
+    <select style={ctl} value={valor} onChange={(e) => set(Number(e.target.value))}>
+      {PYG_ANIOS.slice().reverse().map((a) => <option key={a} value={a}>{a}</option>)}
+    </select>
+  );
+
+  // ---------- RESUMEN ----------
+  const serie = PYG_ANIOS.map((a) => ({ anio: String(a), Ingresos: Math.round(pygIngresos(a)), Gastos: Math.round(pygGastos(a)), Resultado: Math.round(PYG_DATOS[a].resultado) }));
+  const kpi = (titulo, a, b, bueno) => {
+    const d = a - b;
+    return (
+      <div style={{ background: theme.surface, border: `1px solid ${theme.border}`, borderRadius: 12, padding: "12px 14px" }}>
+        <div style={{ fontSize: 12, color: theme.inkSoft }}>{titulo}</div>
+        <div style={{ fontSize: 22, fontWeight: 700, color: theme.ink, marginTop: 2 }}>{fmtEUR(a)}</div>
+        <div style={{ fontSize: 12, marginTop: 2, color: Math.abs(d) < 0.005 ? theme.inkSoft : (d > 0) === bueno ? theme.success : theme.danger }}>
+          {d >= 0 ? "+" : "−"} {fmtEUR(Math.abs(d))} ({pygFmtPct(pygPct(a, b))}) vs {anioB}
+        </div>
+      </div>
+    );
+  };
+  const ratios = (a) => {
+    const ing = pygIngresos(a) || 1;
+    const cifra = pygTotal(a, "cifra") || 1;
+    return [
+      ["Cuotas de socios sobre la cifra de negocios", (pygCuenta(a, "70500003") / cifra) * 100],
+      ["Gastos de personal sobre ingresos", (-pygTotal(a, "personal") / ing) * 100],
+      ["Energía (electricidad, gasóleo y agua) sobre ingresos", (-(pygCuenta(a, "62800003") + pygCuenta(a, "62800002") + pygCuenta(a, "62800001")) / ing) * 100],
+      ["Subvenciones y donaciones sobre ingresos", (pygTotal(a, "otrosing") / ing) * 100],
+    ];
+  };
+
+  // ---------- COMPARATIVA ----------
+  const filas = PYG_GRUPOS.map(([id, nombre]) => {
+    const codes = {};
+    [anioA, anioB].forEach((a) => (pygGrupo(a, id)?.cuentas || []).forEach((c) => { codes[c.c] = c.n; }));
+    const cuentas = Object.keys(codes).map((c) => ({ c, n: pygNombre(c, codes[c]), a: pygCuenta(anioA, c), b: pygCuenta(anioB, c) }))
+      .sort((x, y) => Math.abs(y.a - y.b) - Math.abs(x.a - x.b));
+    return { id, nombre, a: pygTotal(anioA, id), b: pygTotal(anioB, id), cuentas };
+  }).filter((f) => f.a !== 0 || f.b !== 0 || f.cuentas.length);
+  const resA = PYG_DATOS[anioA].resultado, resB = PYG_DATOS[anioB].resultado;
+
+  const exportarExcel = async () => {
+    setExportando(true);
+    try {
+      const ExcelJS = await import("exceljs");
+      const Libro = ExcelJS.Workbook || ExcelJS.default?.Workbook;
+      const wb = new Libro();
+      const ws = wb.addWorksheet(`PyG ${anioA} vs ${anioB}`);
+      ws.columns = [{ header: "Cuenta", key: "c", width: 12 }, { header: "Concepto", key: "n", width: 52 }, { header: String(anioA), key: "a", width: 16 },
+        { header: String(anioB), key: "b", width: 16 }, { header: "Diferencia", key: "d", width: 16 }, { header: "Variación %", key: "p", width: 14 }];
+      ws.getRow(1).font = { bold: true };
+      const fila = (c, n, a, b, negrita) => {
+        const r = ws.addRow({ c, n, a, b, d: Math.round((a - b) * 100) / 100, p: b ? (a - b) / Math.abs(b) : null });
+        if (negrita) r.font = { bold: true };
+      };
+      filas.forEach((f) => { fila("", f.nombre, f.a, f.b, true); f.cuentas.forEach((x) => fila(x.c, x.n, x.a, x.b, false)); });
+      ws.addRow({});
+      fila("", "RESULTADO DEL EJERCICIO", resA, resB, true);
+      ["a", "b", "d"].forEach((k) => { ws.getColumn(k).numFmt = "#,##0.00"; });
+      ws.getColumn("p").numFmt = "0.0%";
+      ws.views = [{ state: "frozen", ySplit: 1 }];
+      const buf = await wb.xlsx.writeBuffer();
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }));
+      a.download = `PyG_club_${anioA}_vs_${anioB}.xlsx`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    } catch (e) {
+      window.alert("No se ha podido crear el Excel: " + (e?.message || e));
+    }
+    setExportando(false);
+  };
+
+  // ---------- EVOLUCIÓN ----------
+  const opciones = [];
+  PYG_GRUPOS.forEach(([id, nombre]) => opciones.push({ v: `g:${id}`, t: `▸ ${nombre}`, g: "Grupos" }));
+  const todas = {};
+  PYG_ANIOS.forEach((a) => (PYG_DATOS[a].grupos || []).forEach((g) => g.cuentas.forEach((c) => { todas[c.c] = pygNombre(c.c, c.n); })));
+  Object.keys(todas).sort().forEach((c) => opciones.push({ v: c, t: todas[c], g: "Partidas" }));
+  const valorEv = (a) => (partida.startsWith("g:") ? pygTotal(a, partida.slice(2)) : pygCuenta(a, partida));
+  const serieEv = PYG_ANIOS.map((a) => ({ anio: String(a), valor: Math.round(valorEv(a) * 100) / 100 }));
+  const nombreEv = opciones.find((o) => o.v === partida)?.t.replace("▸ ", "") || "";
+  const atajos = [["Cuotas de socios", "70500003"], ["Green fees", "70000001"], ["Sueldos", "64000000"], ["Electricidad", "62800003"], ["Reparaciones", "62200000"], ["Subvenciones", "74000000"]];
+
+  return (
+    <div style={{ maxWidth: 1100 }}>
+      <div style={{ fontWeight: 700, fontSize: 18, color: theme.ink }}>PyG anual · Golf Ciudad Real C.D.</div>
+      <p style={{ color: theme.inkSoft, marginTop: 4, fontSize: 14 }}>
+        Cuenta de Pérdidas y Ganancias 2020-2025 según la gestoría. Sirve para comparar la gestión económica del club año a año.
+      </p>
+
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", margin: "14px 0" }}>
+        {[["resumen", "Resumen"], ["comparativa", "Comparativa"], ["evolucion", "Evolución"]].map(([id, t]) => (
+          <button key={id} onClick={() => setTab(id)} style={chip(tab === id)}>{t}</button>
+        ))}
+      </div>
+
+      {tab === "resumen" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", fontSize: 14, color: theme.inkSoft }}>
+            Año {selAnio(anioA, setAnioA)} comparado con {selAnio(anioB, setAnioB)}
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
+            {kpi(`Ingresos de explotación ${anioA}`, pygIngresos(anioA), pygIngresos(anioB), true)}
+            {kpi(`Gastos de explotación ${anioA}`, pygGastos(anioA), pygGastos(anioB), false)}
+            {kpi(`Resultado del ejercicio ${anioA}`, resA, resB, true)}
+          </div>
+          <Card>
+            <div style={{ fontWeight: 700, color: theme.ink, marginBottom: 10 }}>Ingresos, gastos y resultado por año</div>
+            <div style={{ width: "100%", height: 300 }}>
+              <ResponsiveContainer>
+                <BarChart data={serie}>
+                  <CartesianGrid strokeDasharray="3 3" stroke={theme.border} />
+                  <XAxis dataKey="anio" />
+                  <YAxis tickFormatter={pygCorto} />
+                  <Tooltip formatter={(v) => fmtEUR(v)} />
+                  <Bar dataKey="Ingresos" fill={theme.success} radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="Gastos" fill={theme.danger} radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="Resultado" fill={theme.accent} radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+            <div style={{ fontSize: 12, color: theme.inkSoft, marginTop: 6 }}>Verde: ingresos · rojo: gastos · dorado: resultado del ejercicio (puede ser negativo).</div>
+          </Card>
+          <Card style={{ padding: 0 }}>
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                <thead>
+                  <tr>
+                    <th style={{ ...th, textAlign: "left" }}>Indicador</th>
+                    {PYG_ANIOS.map((a) => <th key={a} style={th}>{a}</th>)}
+                  </tr>
+                </thead>
+                <tbody>
+                  {[
+                    ["Ingresos de explotación", pygIngresos, false],
+                    ["Gastos de explotación", pygGastos, false],
+                    ["Resultado del ejercicio", (a) => PYG_DATOS[a].resultado, true],
+                  ].map(([t, f, neg]) => (
+                    <tr key={t}>
+                      <td style={{ ...td, textAlign: "left", fontWeight: 600 }}>{t}</td>
+                      {PYG_ANIOS.map((a) => <td key={a} style={{ ...td, color: neg && f(a) < 0 ? theme.danger : theme.ink }}>{fmtEUR(f(a))}</td>)}
+                    </tr>
+                  ))}
+                  {ratios(2025).map(([t], i) => (
+                    <tr key={t}>
+                      <td style={{ ...td, textAlign: "left", color: theme.inkSoft }}>{t}</td>
+                      {PYG_ANIOS.map((a) => <td key={a} style={{ ...td, color: theme.inkSoft }}>{ratios(a)[i][1].toFixed(1).replace(".", ",")} %</td>)}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+        </div>
+      )}
+
+      {tab === "comparativa" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", fontSize: 14, color: theme.inkSoft }}>
+            Comparar {selAnio(anioA, setAnioA)} con {selAnio(anioB, setAnioB)}
+            <button onClick={exportarExcel} disabled={exportando} style={{ ...chip(false), marginLeft: "auto", display: "flex", alignItems: "center", gap: 6 }}>
+              <Download size={14} /> {exportando ? "Creando…" : "Descargar Excel"}
+            </button>
+          </div>
+          <Card style={{ padding: 0 }}>
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                <thead>
+                  <tr>
+                    <th style={{ ...th, textAlign: "left" }}>Concepto</th>
+                    <th style={th}>{anioA}</th>
+                    <th style={th}>{anioB}</th>
+                    <th style={th}>Diferencia</th>
+                    <th style={th}>Variación</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filas.map((f) => {
+                    const abierto = !!abiertos[f.id];
+                    const d = f.a - f.b;
+                    return (
+                      <React.Fragment key={f.id}>
+                        <tr onClick={() => setAbiertos({ ...abiertos, [f.id]: !abierto })} style={{ cursor: "pointer", background: "#FAF8F2" }}>
+                          <td style={{ ...td, textAlign: "left", fontWeight: 700 }}>{abierto ? "▾" : "▸"} {f.nombre}</td>
+                          <td style={{ ...td, fontWeight: 700 }}>{fmtEUR(f.a)}</td>
+                          <td style={{ ...td, fontWeight: 700 }}>{fmtEUR(f.b)}</td>
+                          <td style={{ ...td, fontWeight: 700, color: colorDelta(d) }}>{d >= 0 ? "+" : "−"} {fmtEUR(Math.abs(d))}</td>
+                          <td style={{ ...td, color: colorDelta(d) }}>{pygFmtPct(pygPct(f.a, f.b))}</td>
+                        </tr>
+                        {abierto && f.cuentas.map((x) => {
+                          const dx = x.a - x.b;
+                          return (
+                            <tr key={x.c}>
+                              <td style={{ ...td, textAlign: "left", paddingLeft: 30, color: theme.inkSoft }}>{x.n}</td>
+                              <td style={td}>{x.a ? fmtEUR(x.a) : "—"}</td>
+                              <td style={td}>{x.b ? fmtEUR(x.b) : "—"}</td>
+                              <td style={{ ...td, color: colorDelta(dx) }}>{Math.abs(dx) < 0.005 ? "—" : `${dx >= 0 ? "+" : "−"} ${fmtEUR(Math.abs(dx))}`}</td>
+                              <td style={{ ...td, color: colorDelta(dx) }}>{pygFmtPct(pygPct(x.a, x.b))}</td>
+                            </tr>
+                          );
+                        })}
+                      </React.Fragment>
+                    );
+                  })}
+                  <tr style={{ background: "#F1F6F3" }}>
+                    <td style={{ ...td, textAlign: "left", fontWeight: 700 }}>Resultado del ejercicio</td>
+                    <td style={{ ...td, fontWeight: 700, color: resA < 0 ? theme.danger : theme.success }}>{fmtEUR(resA)}</td>
+                    <td style={{ ...td, fontWeight: 700, color: resB < 0 ? theme.danger : theme.success }}>{fmtEUR(resB)}</td>
+                    <td style={{ ...td, fontWeight: 700, color: colorDelta(resA - resB) }}>{resA - resB >= 0 ? "+" : "−"} {fmtEUR(Math.abs(resA - resB))}</td>
+                    <td style={{ ...td, color: colorDelta(resA - resB) }}>{pygFmtPct(pygPct(resA, resB))}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </Card>
+          <div style={{ fontSize: 12, color: theme.inkSoft }}>
+            Pulsa un grupo para ver sus partidas, ordenadas por mayor variación. Verde = mejora el resultado (más ingreso o menos gasto) y rojo = lo empeora. Los gastos aparecen en negativo, como en la contabilidad.
+          </div>
+        </div>
+      )}
+
+      {tab === "evolucion" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {atajos.map(([t, c]) => <button key={c} onClick={() => setPartida(c)} style={chip(partida === c)}>{t}</button>)}
+          </div>
+          <select style={{ ...ctl, maxWidth: 420 }} value={partida} onChange={(e) => setPartida(e.target.value)}>
+            <optgroup label="Grupos">{opciones.filter((o) => o.g === "Grupos").map((o) => <option key={o.v} value={o.v}>{o.t}</option>)}</optgroup>
+            <optgroup label="Partidas">{opciones.filter((o) => o.g === "Partidas").map((o) => <option key={o.v} value={o.v}>{o.t}</option>)}</optgroup>
+          </select>
+          <Card>
+            <div style={{ fontWeight: 700, color: theme.ink, marginBottom: 10 }}>{nombreEv} · 2020-2025</div>
+            <div style={{ width: "100%", height: 280 }}>
+              <ResponsiveContainer>
+                <BarChart data={serieEv}>
+                  <CartesianGrid strokeDasharray="3 3" stroke={theme.border} />
+                  <XAxis dataKey="anio" />
+                  <YAxis tickFormatter={pygCorto} />
+                  <Tooltip formatter={(v) => fmtEUR(v)} />
+                  <Bar dataKey="valor" name={nombreEv} radius={[4, 4, 0, 0]}>
+                    {serieEv.map((s) => <Cell key={s.anio} fill={s.valor < 0 ? theme.danger : theme.success} />)}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </Card>
+          <Card style={{ padding: 0 }}>
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                <thead><tr><th style={{ ...th, textAlign: "left" }}>Año</th><th style={th}>Importe</th><th style={th}>Variación vs año anterior</th></tr></thead>
+                <tbody>
+                  {serieEv.map((s, i) => {
+                    const ant = i > 0 ? serieEv[i - 1].valor : null;
+                    const d = ant === null ? null : s.valor - ant;
+                    return (
+                      <tr key={s.anio}>
+                        <td style={{ ...td, textAlign: "left", fontWeight: 600 }}>{s.anio}</td>
+                        <td style={td}>{s.valor ? fmtEUR(s.valor) : "—"}</td>
+                        <td style={{ ...td, color: d === null ? theme.inkSoft : colorDelta(d) }}>{d === null ? "—" : `${d >= 0 ? "+" : "−"} ${fmtEUR(Math.abs(d))} (${pygFmtPct(pygPct(s.valor, ant))})`}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+        </div>
+      )}
+
+      <div style={{ fontSize: 11.5, color: theme.inkSoft, marginTop: 14, lineHeight: 1.5 }}>
+        Fuente: PyG de la gestoría (listados de feb. 2022 a feb. 2026). De cada año se usa su presentación más reciente: los datos de 2022 y 2023 vienen reformulados en el PyG del año siguiente, con pequeñas diferencias respecto a la primera presentación.
+      </div>
+    </div>
+  );
+}
+
 /* ============================ VENTAS GCR (histórico) ============================ */
 // Histórico de ventas del club (TPV). Un documento por mes en
 // clubes/{tenant}/ventas_gcr, con todas las líneas del mes dentro.
@@ -4405,7 +4759,7 @@ function App() {
         {active === "mi_tareas" && role === "superadmin" && <MisTareasVista db={db} F={MI_AGENDA_F} ink={theme.ink} soft={theme.inkSoft} />}
         {active === "diario" && role === "superadmin" && <DiarioVista db={db} F={MI_AGENDA_F} area="Finanzas" ink={theme.ink} soft={theme.inkSoft} />}
         {active === "mi_agenda" && role === "superadmin" && <MiAgendaVista db={db} F={MI_AGENDA_F} ink={theme.ink} soft={theme.inkSoft} />}
-        {["resumen", "transacciones", "informes", "gestoria", "presupuestos", "metas"].includes(active) && (
+        {["resumen", "transacciones", "informes", "gestoria", "pyg", "presupuestos", "metas"].includes(active) && (
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
             <span style={{ fontSize: 12, color: theme.inkSoft, fontWeight: 600 }}>Finanzas de:</span>
             {ENTIDADES_FIN.map(([id, nombre]) => (
@@ -4440,6 +4794,7 @@ function App() {
           <InformesView transacciones={transaccionesVista} ventasProshop={ventasProshopVista} />
         )}
         {active === "ventas_gcr" && <VentasGCRView tenantId={tenantId} />}
+        {active === "pyg" && <PygView entidad={entidad} />}
         {active === "gestoria" && <GestoriaView transacciones={transaccionesVista} entidad={entidad} />}
         {active === "presupuestos" && (
           <PresupuestosView presupuestos={presupuestosVista} transacciones={transaccionesVista} />
