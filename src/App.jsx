@@ -86,17 +86,17 @@ const fmtEUR = (n) =>
 // y el resto del club. (Se puede cambiar fila a fila desde Transacciones.)
 const normTx = (s) => String(s || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 const entidadDeTx = (t) =>
-  t.entidad || ((t.origen === "academia" || /academia|pro ?shop/.test(normTx(`${t.category} ${t.activity}`))) ? "jmcf" : "club");
-const ENTIDADES_FIN = [["club", "Golf Ciudad Real (club)"], ["jmcf", "JMCF · Pro Shop y Academia"], ["personal", "Personal (José)"], ["piso", "Piso de Burgos"]];
+  (t.entidad === "personal" || t.entidad === "piso" ? "jmcf" : t.entidad) || ((t.origen === "academia" || /academia|pro ?shop/.test(normTx(`${t.category} ${t.activity}`))) ? "jmcf" : "club");
+const ENTIDADES_FIN = [["club", "Golf Ciudad Real (club)"], ["jmcf", "José (mis actividades)"]];
 // Dentro de JMCF: Pro Shop o Academia. Si la transacción no lo tiene guardado se deduce de la categoría/actividad; si no, queda "sin asignar".
-const NEGOCIOS_JMCF = [["proshop", "Pro Shop"], ["academia", "Academia"]];
+const NEGOCIOS_JMCF = [["proshop", "Pro Shop"], ["academia", "Academia"], ["piso", "Piso de Burgos"], ["personal", "Personal (José)"]];
 const destinoDeTx = (t) => {
   const e = entidadDeTx(t);
   return e === "jmcf" ? negocioDeTx(t) : e; // "club" | "personal" | "proshop" | "academia" | "sin"
 };
 // "Destino" = a qué economía va un movimiento: club, Pro Shop, Academia (las dos de JMCF) o personal.
 const DESTINOS = [["club", "Golf Ciudad Real (club)"], ["proshop", "Pro Shop"], ["academia", "Academia"], ["personal", "Personal (José)"], ["piso", "Piso de Burgos"]];
-const destinoAEnt = (d) => (["club", "personal", "piso"].includes(d) ? { entidad: d, negocio: null } : { entidad: "jmcf", negocio: d });
+const destinoAEnt = (d) => (d === "club" ? { entidad: "club", negocio: null } : { entidad: "jmcf", negocio: d });
 // Categorías sugeridas para el piso de Burgos (se puede escribir cualquier otra).
 const CATEGORIAS_PISO = {
   ingresos: ["Alquiler turístico", "Alquiler de larga duración", "Otros ingresos"],
@@ -104,6 +104,7 @@ const CATEGORIAS_PISO = {
 };
 const negocioDeTx = (t) => {
   if (t.negocio) return t.negocio;
+  if (t.entidad === "personal" || t.entidad === "piso") return t.entidad; // registros guardados antes de agrupar tus actividades en "José"
   if (t.origen === "academia" || String(t.id || "").startsWith("academia-")) return "academia";
   const txt = normTx(`${t.category} ${t.activity}`);
   if (/academia|clases/.test(txt)) return "academia";
@@ -2104,7 +2105,7 @@ function TransaccionesView({ transacciones, onAdd, categorias, tenantId, entidad
                       onChange={(e) => onCambiarDestino && onCambiarDestino(t.id, e.target.value)}
                       style={{ padding: "4px 6px", borderRadius: 6, border: `1px solid ${destinoDeTx(t) === "sin" ? theme.warn : theme.border}`, fontSize: 12, background: "#fff" }}
                     >
-                      <option value="sin" disabled>Sin asignar (JMCF)</option>
+                      <option value="sin" disabled>Sin asignar</option>
                       {DESTINOS.map(([id, n]) => <option key={id} value={id}>{n}</option>)}
                     </select>
                   )}
@@ -2162,7 +2163,7 @@ function TransaccionesView({ transacciones, onAdd, categorias, tenantId, entidad
       {showForm && (
         <TransaccionForm
           initial={datosDetectados}
-          destinoInicial={entidad === "jmcf" ? (negocio === "academia" ? "academia" : "proshop") : entidad}
+          destinoInicial={entidad === "jmcf" ? (["proshop", "academia", "piso", "personal"].includes(negocio) ? negocio : "proshop") : "club"}
           categorias={categorias}
           onClose={() => { setShowForm(false); setDatosDetectados(null); }}
           onSave={(data) => {
@@ -5224,10 +5225,10 @@ function App() {
   const [ventasProshop, setVentasProshop] = useState([]);
   const [categorias, setCategorias] = useState(null); // null = aún no cargado
   const [entidad, setEntidad] = useState(() => {
-    try { return (["jmcf", "personal", "piso"].includes(localStorage.getItem("finanzas_entidad")) ? localStorage.getItem("finanzas_entidad") : "club"); } catch (e) { return "club"; }
+    try { return (["jmcf", "personal", "piso"].includes(localStorage.getItem("finanzas_entidad")) ? "jmcf" : "club"); } catch (e) { return "club"; }
   });
   const [negocio, setNegocio] = useState(() => {
-    try { const v = localStorage.getItem("finanzas_negocio"); return ["proshop", "academia", "sin"].includes(v) ? v : "todo"; } catch (e) { return "todo"; }
+    try { const v = localStorage.getItem("finanzas_negocio"); const ent = localStorage.getItem("finanzas_entidad"); if (ent === "personal" || ent === "piso") return ent; return ["proshop", "academia", "piso", "personal", "sin"].includes(v) ? v : "todo"; } catch (e) { return "todo"; }
   });
   const cambiarNegocio = (n) => {
     setNegocio(n);
@@ -5385,26 +5386,33 @@ function App() {
         {["resumen", "transacciones", "informes", "gestoria", "pyg", "presupuestos", "metas"].includes(active) && (
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
             <span style={{ fontSize: 12, color: theme.inkSoft, fontWeight: 600 }}>Finanzas de:</span>
-            {(() => {
-              const vistaActual = entidad === "jmcf" ? (negocio === "proshop" || negocio === "academia" || negocio === "sin" ? negocio : "jmcf") : entidad;
-              const opciones = [["club", "Golf Ciudad Real (club)"], ["proshop", "Pro Shop"], ["academia", "Academia"], ["jmcf", "JMCF (Pro Shop + Academia)"], ["personal", "Personal (José)"], ["piso", "Piso de Burgos"]];
-              if (sinAsignarJmcf > 0) opciones.push(["sin", `Sin asignar (${sinAsignarJmcf})`]);
-              const elegir = (id) => {
-                if (id === "club" || id === "personal" || id === "piso") { cambiarEntidad(id); cambiarNegocio("todo"); }
-                else { cambiarEntidad("jmcf"); cambiarNegocio(id === "jmcf" ? "todo" : id); }
-              };
-              return opciones.map(([id, nombre]) => (
-                <button
-                  key={id}
-                  onClick={() => elegir(id)}
-                  style={{
-                    padding: "6px 12px", borderRadius: 999, fontSize: 13, fontWeight: 600, cursor: "pointer",
-                    border: `1px solid ${vistaActual === id ? theme.pine : theme.border}`,
-                    background: vistaActual === id ? theme.pine : "#fff", color: vistaActual === id ? "#fff" : theme.ink,
-                  }}
-                >{nombre}</button>
-              ));
-            })()}
+            {ENTIDADES_FIN.map(([id, nombre]) => (
+              <button
+                key={id}
+                onClick={() => cambiarEntidad(id)}
+                style={{
+                  padding: "6px 12px", borderRadius: 999, fontSize: 13, fontWeight: 600, cursor: "pointer",
+                  border: `1px solid ${entidad === id ? theme.pine : theme.border}`,
+                  background: entidad === id ? theme.pine : "#fff", color: entidad === id ? "#fff" : theme.ink,
+                }}
+              >{nombre}</button>
+            ))}
+            {entidad === "jmcf" && (
+              <>
+                <span style={{ fontSize: 12, color: theme.inkSoft, fontWeight: 600, marginLeft: 12 }}>Actividad:</span>
+                {[["todo", "Todas"], ...NEGOCIOS_JMCF, ...(sinAsignarJmcf > 0 ? [["sin", `Sin asignar (${sinAsignarJmcf})`]] : [])].map(([id, n]) => (
+                  <button
+                    key={id}
+                    onClick={() => cambiarNegocio(id)}
+                    style={{
+                      padding: "6px 12px", borderRadius: 999, fontSize: 13, fontWeight: 600, cursor: "pointer",
+                      border: `1px solid ${negocio === id ? theme.accent : theme.border}`,
+                      background: negocio === id ? theme.accentSoft : "#fff", color: theme.ink,
+                    }}
+                  >{n}</button>
+                ))}
+              </>
+            )}
           </div>
         )}
         {active === "resumen" && (
@@ -5416,7 +5424,7 @@ function App() {
             categorias={categorias || CATEGORIAS_DEFECTO}
             onGuardarCategorias={handleGuardarCategorias}
             tenantId={tenantId}
-            ventasEnt={entidad === "jmcf" ? "jmcf" : entidad === "club" ? "gcr" : null}
+            ventasEnt={entidad === "jmcf" ? "jmcf" : "gcr"}
             negocio={negocioActivo}
           />
         )}
