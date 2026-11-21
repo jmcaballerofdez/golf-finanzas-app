@@ -777,7 +777,7 @@ function ResumenView({ transacciones: transaccionesProp, presupuestos, metas, ve
   const delMes = transacciones.filter((t) => monthKey(t.date) === currentMonth);
   const presupuestosAlerta = presupuestos
     .map((p) => {
-      const gastado = delMes.filter((t) => t.type === "expense" && t.category === p.category).reduce((s, t) => s + Number(t.amount), 0);
+      const gastado = gastoDePresupuesto(p, delMes) + nominasDePresupuesto(p, now.getMonth() + 1);
       return { ...p, gastado, pct: (gastado / Number(p.monthly_limit)) * 100 };
     })
     .filter((p) => p.pct >= 80)
@@ -1936,10 +1936,17 @@ function TransaccionesView({ transacciones, onAdd, categorias, tenantId, entidad
   const [errorTicket, setErrorTicket] = useState("");
   const abrirTicket = async (t) => {
     setErrorTicket("");
+    // En móvil/tablet (Safari, Chrome) las pestañas emergentes tras una espera se bloquean: se abre en la misma pestaña.
+    const esMovil = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+    // En ordenador la pestaña se abre ANTES de la espera (si no, el navegador bloquea la ventana emergente).
+    const w = esMovil ? null : window.open("", "_blank");
     try {
-      window.open(await getDownloadURL(ref(storage, t.ticket_path)), "_blank", "noopener");
+      const url = await getDownloadURL(ref(storage, t.ticket_path));
+      if (w) w.location.href = url;
+      else window.location.href = url;
     } catch (e) {
-      setErrorTicket("No se ha podido abrir el archivo: " + (e?.message || e));
+      if (w) w.close();
+      setErrorTicket("No se ha podido abrir el archivo: " + (e?.code ? e.code + " · " : "") + (e?.message || e));
     }
   };
   const ordenadas = [...transacciones].sort(
@@ -2476,45 +2483,95 @@ function InformesView({ transacciones, ventasProshop }) {
   );
 }
 
-function PresupuestosView({ presupuestos, transacciones }) {
+// Gasto de un presupuesto: si tiene cuentas contables (presupuesto 2026 del club) se cuenta por cuenta; si no, por categoría.
+const gastoDePresupuesto = (p, txs) =>
+  txs
+    .filter((t) => t.type === "expense" && (Array.isArray(p.cuentas) && p.cuentas.length ? p.cuentas.includes(t.cuenta) : t.category === p.category))
+    .reduce((s, t) => s + Number(t.amount || 0), 0);
+
+// Nóminas de 2026 (totales mensuales). mes: 1-12 o null para todo el año.
+const nominasDePresupuesto = (p, mes) => {
+  if (!Array.isArray(p.cuentas)) return 0;
+  const lista = PYG_NOMINAS_2026.filter((x) => mes === null || x.m === mes);
+  return lista.reduce((a, x) => a + (p.cuentas.includes("64000000") ? x.bruto : 0) + (p.cuentas.includes("64200000") ? x.ss : 0), 0);
+};
+
+const PRESUP_COLORES = ["#1F4F37", "#C6A253", "#2F7D4F", "#B3462C", "#4A6FA5", "#8A5A9E", "#C69A3C", "#5C6C62"];
+
+function PresupuestosView({ presupuestos, transacciones, tenantId, entidad }) {
   const now = new Date();
   const currentMonth = monthKey(now.toISOString());
-  const delMes = transacciones.filter(
-    (t) => monthKey(t.date) === currentMonth && t.type === "expense"
-  );
+  const delMes = transacciones.filter((t) => monthKey(t.date) === currentMonth && t.type === "expense");
+  const delAnio = transacciones.filter((t) => t.type === "expense" && aFecha(t.date).getFullYear() === now.getFullYear());
+  const [cargando, setCargando] = useState(false);
+  const [aviso, setAviso] = useState("");
+
+  const cargarPresupuesto2026 = async () => {
+    if (!window.confirm("Se crearán (o actualizarán) los presupuestos de gastos de 2026 del club, con el importe anual dividido entre 12. ¿Continuar?")) return;
+    setCargando(true); setAviso("");
+    try {
+      const gastos = PRESUP_2026.filter((x) => x.t === "g" && x.p26 > 0);
+      for (let i = 0; i < gastos.length; i++) {
+        const x = gastos[i];
+        await setDoc(doc(db, `clubes/${tenantId}/finanzas_presupuestos`, `ppto26-${String(i + 1).padStart(2, "0")}`), {
+          category: x.n, monthly_limit: Math.round((x.p26 / 12) * 100) / 100, annual_limit: x.p26, cuentas: x.c,
+          color: PRESUP_COLORES[i % PRESUP_COLORES.length], entidad: "club", origen: "ppto2026",
+        }, { merge: true });
+      }
+      setAviso(`Presupuesto 2026 cargado: ${gastos.length} partidas.`);
+    } catch (e) {
+      setAviso("No se pudo cargar: " + (e.message || e));
+    }
+    setCargando(false);
+  };
 
   return (
     <div>
-      <div style={{ fontWeight: 700, fontSize: 18, color: theme.ink, marginBottom: 16 }}>
-        Presupuestos · {new Intl.DateTimeFormat("es-ES", { month: "long", year: "numeric" }).format(now)}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10, marginBottom: 16 }}>
+        <div style={{ fontWeight: 700, fontSize: 18, color: theme.ink }}>
+          Presupuestos · {new Intl.DateTimeFormat("es-ES", { month: "long", year: "numeric" }).format(now)}
+        </div>
+        {entidad === "club" && (
+          <button onClick={cargarPresupuesto2026} disabled={cargando} style={{ padding: "8px 14px", borderRadius: 10, border: "none", background: theme.pine, color: "#fff", fontWeight: 700, fontSize: 13, cursor: cargando ? "default" : "pointer" }}>
+            {cargando ? "Cargando…" : "Cargar presupuesto 2026"}
+          </button>
+        )}
       </div>
+      {aviso && <div style={{ fontSize: 13, color: aviso.startsWith("No se pudo") ? theme.danger : theme.success, marginBottom: 12 }}>{aviso}</div>}
+      {presupuestos.length === 0 && (
+        <div style={{ fontSize: 14, color: theme.inkSoft, marginBottom: 12 }}>Aún no hay presupuestos. {entidad === "club" ? "Pulsa «Cargar presupuesto 2026» para crear los del club." : ""}</div>
+      )}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16 }}>
         {presupuestos.map((p) => {
-          const gastado = delMes
-            .filter((t) => t.category === p.category)
-            .reduce((s, t) => s + Number(t.amount), 0);
+          const gastado = gastoDePresupuesto(p, delMes) + nominasDePresupuesto(p, now.getMonth() + 1);
+          const gastadoAnio = p.annual_limit ? gastoDePresupuesto(p, delAnio) + nominasDePresupuesto(p, null) : 0;
           return (
             <Card key={p.id}>
-              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
-                <span style={{ fontWeight: 700, color: theme.ink }}>{p.category}</span>
-                <span
-                  style={{
-                    width: 10,
-                    height: 10,
-                    borderRadius: "50%",
-                    background: p.color,
-                    marginTop: 4,
-                  }}
-                />
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8, gap: 8 }}>
+                <span style={{ fontWeight: 700, color: theme.ink, fontSize: 14 }}>{p.category}</span>
+                <span style={{ width: 10, height: 10, borderRadius: "50%", background: p.color, marginTop: 4, flexShrink: 0 }} />
               </div>
               <div style={{ fontSize: 13, color: theme.inkSoft, marginBottom: 8 }}>
-                {fmtEUR(gastado)} de {fmtEUR(p.monthly_limit)}
+                Mes: {fmtEUR(gastado)} de {fmtEUR(p.monthly_limit)}
               </div>
               <ProgressBar value={gastado} max={Number(p.monthly_limit)} color={p.color} />
+              {p.annual_limit ? (
+                <>
+                  <div style={{ fontSize: 13, color: theme.inkSoft, margin: "10px 0 8px" }}>
+                    Año: {fmtEUR(gastadoAnio)} de {fmtEUR(p.annual_limit)}
+                  </div>
+                  <ProgressBar value={gastadoAnio} max={Number(p.annual_limit)} color={p.color} />
+                </>
+              ) : null}
             </Card>
           );
         })}
       </div>
+      {presupuestos.some((p) => p.annual_limit) && (
+        <div style={{ fontSize: 12, color: theme.inkSoft, marginTop: 12 }}>
+          El gasto se cuenta por cuenta contable de las facturas de proveedores importadas y por las nóminas; los gastos escritos a mano sin cuenta contable no se suman a estas partidas.
+        </div>
+      )}
     </div>
   );
 }
@@ -5316,7 +5373,7 @@ function App() {
         {active === "pyg" && <PygView entidad={entidad} transacciones={transaccionesVista} />}
         {active === "gestoria" && <GestoriaView transacciones={transaccionesVista} entidad={entidad} />}
         {active === "presupuestos" && (
-          <PresupuestosView presupuestos={presupuestosVista} transacciones={transaccionesVista} />
+          <PresupuestosView presupuestos={presupuestosVista} transacciones={transaccionesVista} tenantId={tenantId} entidad={entidad} />
         )}
         {active === "metas" && <MetasView metas={metasVista} />}
         {active === "tareas" && (
