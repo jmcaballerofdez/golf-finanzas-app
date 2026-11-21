@@ -667,7 +667,7 @@ function ResumenView({ transacciones: transaccionesProp, presupuestos, metas, ve
 
   // --- Ventas del Excel: se cargan los meses del periodo (y los 12 anteriores, para "vs. año anterior") ---
   const xlCache = useRef({});
-  const [xl, setXl] = useState({ lineas: [], maxPorMes: {} });
+  const [xl, setXl] = useState({ lineas: [], maxPorMes: {}, maxNeg: {} });
   const [xlCargando, setXlCargando] = useState(false);
   useEffect(() => {
     let vivo = true;
@@ -685,6 +685,7 @@ function ResumenView({ transacciones: transaccionesProp, presupuestos, metas, ve
       }
       const lineas = [];
       const maxPorMes = {};
+      const maxNeg = { proshop: {}, academia: {} }; // última fecha cubierta por el Excel de cada negocio (Pro Shop y Academia van por separado)
       for (const id of ids) {
         const clave = `${col}/${id}`;
         if (!(clave in xlCache.current)) {
@@ -699,20 +700,25 @@ function ResumenView({ transacciones: transaccionesProp, presupuestos, metas, ve
         if (ls && ls.length) {
           ls.forEach((l) => lineas.push({ date: `${l.d}T12:00:00`, d: l.d, total: Number(l.t || 0), category: xlTitulo(l.f), negocio: /academia/i.test(String(l.f || "")) ? "academia" : "proshop" }));
           maxPorMes[id] = ls.reduce((mx, l) => (l.d > mx ? l.d : mx), "");
+          ls.forEach((l) => {
+            const n = /academia/i.test(String(l.f || "")) ? "academia" : "proshop";
+            if (!maxNeg[n][id] || l.d > maxNeg[n][id]) maxNeg[n][id] = l.d;
+          });
         }
       }
-      if (vivo) { setXl({ lineas, maxPorMes }); setXlCargando(false); }
+      if (vivo) { setXl({ lineas, maxPorMes, maxNeg }); setXlCargando(false); }
     })();
     return () => { vivo = false; };
   }, [tenantId, ventasEnt, desde, hasta]);
 
   // Para no contar dos veces: donde el Excel tiene ventas (hasta su última fecha de ese mes),
   // no se cuentan las ventas "Ventas Campo" de Transacciones (club) ni Academia/Proshop automáticos (JMCF).
-  const cubiertoPorExcel = (fecha) => {
+  const cubiertoPorExcel = (fecha, neg) => {
     const f = aFecha(fecha);
     if (!f || isNaN(f)) return false;
     const d = `${f.getFullYear()}-${String(f.getMonth() + 1).padStart(2, "0")}-${String(f.getDate()).padStart(2, "0")}`;
-    const mx = xl.maxPorMes[d.slice(0, 7)];
+    // En JMCF cada negocio se compara con las ventas de SU familia; si el Excel no trae Academia ese mes, los cobros de Academia no se descartan.
+    const mx = ventasEnt === "jmcf" && neg ? xl.maxNeg?.[neg]?.[d.slice(0, 7)] : xl.maxPorMes[d.slice(0, 7)];
     return !!mx && d <= mx;
   };
   const transacciones = useMemo(
@@ -720,11 +726,11 @@ function ResumenView({ transacciones: transaccionesProp, presupuestos, metas, ve
       const esVentaDuplicable = ventasEnt === "jmcf"
         ? (t.type === "income" && (String(t.id).startsWith("academia-") || t.origen === "academia"))
         : (t.type === "income" && normTx(t.category) === "ventas campo");
-      return !(esVentaDuplicable && cubiertoPorExcel(t.date));
+      return !(esVentaDuplicable && cubiertoPorExcel(t.date, "academia"));
     }),
     [transaccionesProp, xl, ventasEnt]
   );
-  const ventasProshop = useMemo(() => ventasProshopProp.filter((v) => !cubiertoPorExcel(v.creadoEn)), [ventasProshopProp, xl]);
+  const ventasProshop = useMemo(() => ventasProshopProp.filter((v) => !cubiertoPorExcel(v.creadoEn, "proshop")), [ventasProshopProp, xl]);
 
   const enRango = (t) => { const f = aFecha(t.date); return f >= desde && f <= hasta; };
   const delRango = transacciones.filter(enRango);
