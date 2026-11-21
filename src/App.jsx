@@ -87,7 +87,7 @@ const fmtEUR = (n) =>
 const normTx = (s) => String(s || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 const entidadDeTx = (t) =>
   t.entidad || ((t.origen === "academia" || /academia|pro ?shop/.test(normTx(`${t.category} ${t.activity}`))) ? "jmcf" : "club");
-const ENTIDADES_FIN = [["club", "Golf Ciudad Real (club)"], ["jmcf", "JMCF · Pro Shop y Academia"]];
+const ENTIDADES_FIN = [["club", "Golf Ciudad Real (club)"], ["jmcf", "JMCF · Pro Shop y Academia"], ["personal", "Personal (José)"]];
 // Dentro de JMCF: Pro Shop o Academia. Si la transacción no lo tiene guardado se deduce de la categoría/actividad; si no, queda "sin asignar".
 const NEGOCIOS_JMCF = [["proshop", "Pro Shop"], ["academia", "Academia"]];
 const negocioDeTx = (t) => {
@@ -1563,7 +1563,7 @@ function TransaccionForm({ onClose, onSave, initial, categorias, entidadInicial 
         <label style={label}>Actividad (opcional: club / mantenimiento...)</label>
         <input style={inputStyle} value={form.activity} onChange={set("activity")} />
 
-        <label style={label}>Se guarda en</label>
+        <label style={label}>¿De quién es este gasto o ingreso? (club, JMCF o personal)</label>
         <select style={inputStyle} value={form.entidad} onChange={set("entidad")}>
           {ENTIDADES_FIN.map(([id, n]) => <option key={id} value={id}>{n}</option>)}
         </select>
@@ -2104,6 +2104,7 @@ function TransaccionesView({ transacciones, onAdd, categorias, tenantId, entidad
                     >
                       <option value="club">Club</option>
                       <option value="jmcf">JMCF</option>
+                      <option value="personal">Personal</option>
                     </select>
                   )}
                 </td>
@@ -3825,7 +3826,7 @@ function PygView({ entidad, transacciones }) {
   const [partida, setPartida] = useState("62800003");
   const [exportando, setExportando] = useState(false);
 
-  if (entidad === "jmcf") {
+  if (entidad !== "club") {
     return (
       <Card>
         <div style={{ fontWeight: 700, color: theme.ink, marginBottom: 6 }}>PyG anual</div>
@@ -5238,7 +5239,7 @@ function App() {
   const [ventasProshop, setVentasProshop] = useState([]);
   const [categorias, setCategorias] = useState(null); // null = aún no cargado
   const [entidad, setEntidad] = useState(() => {
-    try { return localStorage.getItem("finanzas_entidad") === "jmcf" ? "jmcf" : "club"; } catch (e) { return "club"; }
+    try { return (["jmcf", "personal"].includes(localStorage.getItem("finanzas_entidad")) ? localStorage.getItem("finanzas_entidad") : "club"); } catch (e) { return "club"; }
   });
   const [negocio, setNegocio] = useState(() => {
     try { const v = localStorage.getItem("finanzas_negocio"); return ["proshop", "academia", "sin"].includes(v) ? v : "todo"; } catch (e) { return "todo"; }
@@ -5431,13 +5432,13 @@ function App() {
         {active === "resumen" && (
           <ResumenView
             transacciones={transaccionesVista}
-            presupuestos={presupuestos}
-            metas={metas}
+            presupuestos={presupuestosVista}
+            metas={metasVista}
             ventasProshop={ventasProshopVista}
             categorias={categorias || CATEGORIAS_DEFECTO}
             onGuardarCategorias={handleGuardarCategorias}
             tenantId={tenantId}
-            ventasEnt={entidad === "jmcf" ? "jmcf" : "gcr"}
+            ventasEnt={entidad === "jmcf" ? "jmcf" : entidad === "club" ? "gcr" : null}
             negocio={negocioActivo}
           />
         )}
