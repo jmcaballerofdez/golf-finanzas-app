@@ -5451,7 +5451,7 @@ function App() {
           <TareasView tareas={tareas} onUpdateStatus={handleUpdateTareaStatus} />
         )}
         {active === "ajustes" && (
-          <AjustesView transacciones={transacciones} presupuestos={presupuestos} metas={metas} tareas={tareas} />
+          <AjustesView tenantId={tenantId} transacciones={transacciones} presupuestos={presupuestos} metas={metas} tareas={tareas} />
         )}
       </main>
     </div>
@@ -5463,7 +5463,7 @@ function App() {
 // (transacciones, presupuestos, metas, tareas) para empezar a trabajar
 // con datos reales. NO toca las categorías configuradas ni las ventas
 // de Proshop (esas no son "datos ficticios" de Finanzas).
-function AjustesView({ transacciones, presupuestos, metas, tareas }) {
+function AjustesView({ transacciones, presupuestos, metas, tareas, tenantId }) {
   const [seleccion, setSeleccion] = useState({ transacciones: true, presupuestos: true, metas: true, tareas: false, ventas: true, archivos: false });
   const [copiaHecha, setCopiaHecha] = useState(false);
   const [copiando, setCopiando] = useState(false);
