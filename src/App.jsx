@@ -87,7 +87,7 @@ const fmtEUR = (n) =>
 const normTx = (s) => String(s || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 const entidadDeTx = (t) =>
   t.entidad || ((t.origen === "academia" || /academia|pro ?shop/.test(normTx(`${t.category} ${t.activity}`))) ? "jmcf" : "club");
-const ENTIDADES_FIN = [["club", "Golf Ciudad Real (club)"], ["jmcf", "JMCF · Pro Shop y Academia"], ["personal", "Personal (José)"]];
+const ENTIDADES_FIN = [["club", "Golf Ciudad Real (club)"], ["jmcf", "JMCF · Pro Shop y Academia"], ["personal", "Personal (José)"], ["piso", "Piso de Burgos"]];
 // Dentro de JMCF: Pro Shop o Academia. Si la transacción no lo tiene guardado se deduce de la categoría/actividad; si no, queda "sin asignar".
 const NEGOCIOS_JMCF = [["proshop", "Pro Shop"], ["academia", "Academia"]];
 const destinoDeTx = (t) => {
@@ -95,8 +95,13 @@ const destinoDeTx = (t) => {
   return e === "jmcf" ? negocioDeTx(t) : e; // "club" | "personal" | "proshop" | "academia" | "sin"
 };
 // "Destino" = a qué economía va un movimiento: club, Pro Shop, Academia (las dos de JMCF) o personal.
-const DESTINOS = [["club", "Golf Ciudad Real (club)"], ["proshop", "Pro Shop"], ["academia", "Academia"], ["personal", "Personal (José)"]];
-const destinoAEnt = (d) => (d === "club" ? { entidad: "club", negocio: null } : d === "personal" ? { entidad: "personal", negocio: null } : { entidad: "jmcf", negocio: d });
+const DESTINOS = [["club", "Golf Ciudad Real (club)"], ["proshop", "Pro Shop"], ["academia", "Academia"], ["personal", "Personal (José)"], ["piso", "Piso de Burgos"]];
+const destinoAEnt = (d) => (["club", "personal", "piso"].includes(d) ? { entidad: d, negocio: null } : { entidad: "jmcf", negocio: d });
+// Categorías sugeridas para el piso de Burgos (se puede escribir cualquier otra).
+const CATEGORIAS_PISO = {
+  ingresos: ["Alquiler turístico", "Alquiler de larga duración", "Otros ingresos"],
+  gastos: ["Limpieza y lavandería", "Suministros (luz, agua, gas, internet)", "Comunidad de propietarios", "IBI y tasas", "Seguro del hogar", "Reparaciones y mantenimiento", "Comisiones de plataformas", "Mobiliario y menaje", "Gestoría y trámites", "Otros gastos"],
+};
 const negocioDeTx = (t) => {
   if (t.negocio) return t.negocio;
   if (t.origen === "academia" || String(t.id || "").startsWith("academia-")) return "academia";
@@ -1540,7 +1545,7 @@ function TransaccionForm({ onClose, onSave, initial, categorias, destinoInicial 
         <label style={label}>Categoría</label>
         <input style={inputStyle} value={form.category} onChange={set("category")} required list="lista-categorias" placeholder="Elige o escribe una nueva…" />
         <datalist id="lista-categorias">
-          {(form.type === "income" ? categorias?.ingresos : categorias?.gastos || []).map((c) => <option key={c} value={c} />)}
+          {((form.destino === "piso" ? CATEGORIAS_PISO : categorias) || {})[form.type === "income" ? "ingresos" : "gastos"]?.map((c) => <option key={c} value={c} />)}
         </datalist>
 
         <label style={label}>Subcategoría (opcional)</label>
@@ -5219,7 +5224,7 @@ function App() {
   const [ventasProshop, setVentasProshop] = useState([]);
   const [categorias, setCategorias] = useState(null); // null = aún no cargado
   const [entidad, setEntidad] = useState(() => {
-    try { return (["jmcf", "personal"].includes(localStorage.getItem("finanzas_entidad")) ? localStorage.getItem("finanzas_entidad") : "club"); } catch (e) { return "club"; }
+    try { return (["jmcf", "personal", "piso"].includes(localStorage.getItem("finanzas_entidad")) ? localStorage.getItem("finanzas_entidad") : "club"); } catch (e) { return "club"; }
   });
   const [negocio, setNegocio] = useState(() => {
     try { const v = localStorage.getItem("finanzas_negocio"); return ["proshop", "academia", "sin"].includes(v) ? v : "todo"; } catch (e) { return "todo"; }
@@ -5382,10 +5387,10 @@ function App() {
             <span style={{ fontSize: 12, color: theme.inkSoft, fontWeight: 600 }}>Finanzas de:</span>
             {(() => {
               const vistaActual = entidad === "jmcf" ? (negocio === "proshop" || negocio === "academia" || negocio === "sin" ? negocio : "jmcf") : entidad;
-              const opciones = [["club", "Golf Ciudad Real (club)"], ["proshop", "Pro Shop"], ["academia", "Academia"], ["jmcf", "JMCF (Pro Shop + Academia)"], ["personal", "Personal (José)"]];
+              const opciones = [["club", "Golf Ciudad Real (club)"], ["proshop", "Pro Shop"], ["academia", "Academia"], ["jmcf", "JMCF (Pro Shop + Academia)"], ["personal", "Personal (José)"], ["piso", "Piso de Burgos"]];
               if (sinAsignarJmcf > 0) opciones.push(["sin", `Sin asignar (${sinAsignarJmcf})`]);
               const elegir = (id) => {
-                if (id === "club" || id === "personal") { cambiarEntidad(id); cambiarNegocio("todo"); }
+                if (id === "club" || id === "personal" || id === "piso") { cambiarEntidad(id); cambiarNegocio("todo"); }
                 else { cambiarEntidad("jmcf"); cambiarNegocio(id === "jmcf" ? "todo" : id); }
               };
               return opciones.map(([id, nombre]) => (
