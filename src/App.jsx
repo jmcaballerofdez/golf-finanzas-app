@@ -88,6 +88,16 @@ const normTx = (s) => String(s || "").toLowerCase().normalize("NFD").replace(/[\
 const entidadDeTx = (t) =>
   t.entidad || ((t.origen === "academia" || /academia|pro ?shop/.test(normTx(`${t.category} ${t.activity}`))) ? "jmcf" : "club");
 const ENTIDADES_FIN = [["club", "Golf Ciudad Real (club)"], ["jmcf", "JMCF · Pro Shop y Academia"]];
+// Dentro de JMCF: Pro Shop o Academia. Si la transacción no lo tiene guardado se deduce de la categoría/actividad; si no, queda "sin asignar".
+const NEGOCIOS_JMCF = [["proshop", "Pro Shop"], ["academia", "Academia"]];
+const negocioDeTx = (t) => {
+  if (t.negocio) return t.negocio;
+  if (t.origen === "academia" || String(t.id || "").startsWith("academia-")) return "academia";
+  const txt = normTx(`${t.category} ${t.activity}`);
+  if (/academia|clases/.test(txt)) return "academia";
+  if (/pro ?shop/.test(txt)) return "proshop";
+  return "sin";
+};
 
 const fmtDate = (isoOrTimestamp) => {
   if (!isoOrTimestamp) return "—";
@@ -631,7 +641,7 @@ function ModalCategorias({ categorias, onClose, onGuardar }) {
 // Ventas del Excel (colección ventas_gcr / ventas_jmcf) para el Resumen: se leen solo los meses que hacen falta.
 const xlTitulo = (s) => String(s || "Sin familia").toLowerCase().replace(/(^|\s)\S/g, (c) => c.toUpperCase());
 
-function ResumenView({ transacciones: transaccionesProp, presupuestos, metas, ventasProshop: ventasProshopProp, categorias, onGuardarCategorias, tenantId, ventasEnt }) {
+function ResumenView({ transacciones: transaccionesProp, presupuestos, metas, ventasProshop: ventasProshopProp, categorias, onGuardarCategorias, tenantId, ventasEnt, negocio }) {
   const now = new Date();
   const [preset, setPreset] = useState("mes");
   const [desdeManual, setDesdeManual] = useState(new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10));
@@ -674,7 +684,7 @@ function ResumenView({ transacciones: transaccionesProp, presupuestos, metas, ve
         }
         const ls = xlCache.current[clave];
         if (ls && ls.length) {
-          ls.forEach((l) => lineas.push({ date: `${l.d}T12:00:00`, d: l.d, total: Number(l.t || 0), category: xlTitulo(l.f) }));
+          ls.forEach((l) => lineas.push({ date: `${l.d}T12:00:00`, d: l.d, total: Number(l.t || 0), category: xlTitulo(l.f), negocio: /academia/i.test(String(l.f || "")) ? "academia" : "proshop" }));
           maxPorMes[id] = ls.reduce((mx, l) => (l.d > mx ? l.d : mx), "");
         }
       }
@@ -712,7 +722,11 @@ function ResumenView({ transacciones: transaccionesProp, presupuestos, metas, ve
   const ventasProshopRango = ventasProshop.filter((v) => { const f = aFecha(v.creadoEn); return f >= desde && f <= hasta; });
   const totalProshopAuto = ventasProshopRango.reduce((s, v) => s + Number(v.total || 0), 0);
 
-  const ventasXlRango = xl.lineas.filter((l) => { const f = aFecha(l.date); return f >= desde && f <= hasta; });
+  const xlLineas = useMemo(
+    () => (ventasEnt === "jmcf" && negocio && negocio !== "todo" ? xl.lineas.filter((l) => l.negocio === negocio) : xl.lineas),
+    [xl, negocio, ventasEnt]
+  );
+  const ventasXlRango = xlLineas.filter((l) => { const f = aFecha(l.date); return f >= desde && f <= hasta; });
   const totalXl = ventasXlRango.reduce((s, l) => s + l.total, 0);
 
   const totalIngresos = ingresosManual.reduce((s, t) => s + Number(t.amount), 0) + totalProshopAuto + totalXl;
@@ -750,14 +764,14 @@ function ResumenView({ transacciones: transaccionesProp, presupuestos, metas, ve
 
       const ingB = sumaEnRango(transacciones, b.inicio, b.fin, "date", "amount", (t) => t.type === "income")
         + sumaEnRango(ventasProshop, b.inicio, b.fin, "creadoEn", "total")
-        + sumaEnRango(xl.lineas, b.inicio, b.fin, "date", "total");
+        + sumaEnRango(xlLineas, b.inicio, b.fin, "date", "total");
       const gasB = sumaEnRango(transacciones, b.inicio, b.fin, "date", "amount", (t) => t.type === "expense");
 
       const inicioAnt = new Date(b.inicio); inicioAnt.setFullYear(inicioAnt.getFullYear() - 1);
       const finAnt = new Date(b.fin); finAnt.setFullYear(finAnt.getFullYear() - 1);
       const ingAnt = sumaEnRango(transacciones, inicioAnt, finAnt, "date", "amount", (t) => t.type === "income")
         + sumaEnRango(ventasProshop, inicioAnt, finAnt, "creadoEn", "total")
-        + sumaEnRango(xl.lineas, inicioAnt, finAnt, "date", "total");
+        + sumaEnRango(xlLineas, inicioAnt, finAnt, "date", "total");
       const gasAnt = sumaEnRango(transacciones, inicioAnt, finAnt, "date", "amount", (t) => t.type === "expense");
 
       const presupuestoB = totalPresupuestoMensual * (diasBucket / 30.44);
@@ -771,7 +785,7 @@ function ResumenView({ transacciones: transaccionesProp, presupuestos, metas, ve
         "Presupuesto gastos": presupuestoB,
       };
     });
-  }, [desde, hasta, transacciones, ventasProshop, xl, totalPresupuestoMensual]);
+  }, [desde, hasta, transacciones, ventasProshop, xlLineas, totalPresupuestoMensual]);
 
   const currentMonth = monthKey(now.toISOString());
   const delMes = transacciones.filter((t) => monthKey(t.date) === currentMonth);
@@ -1413,6 +1427,7 @@ function TransaccionForm({ onClose, onSave, initial, categorias, entidadInicial 
     base_amount: initial?.base || (initial?.ivaPct && initial?.amount ? (Number(initial.amount) / (1 + Number(initial.ivaPct) / 100)).toFixed(2) : ""),
     irpf_deductible: "no",
     entidad: initial?.entidad || entidadInicial || "club",
+    negocio: initial?.negocio || "proshop",
   });
 
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
@@ -1424,6 +1439,7 @@ function TransaccionForm({ onClose, onSave, initial, categorias, entidadInicial 
       ...form,
       ticket_path: initial?.ticket?.path || null,
       ticket_nombre: initial?.ticket?.nombre || null,
+      negocio: form.entidad === "jmcf" ? (form.negocio || "proshop") : null,
       amount: Number(form.amount).toFixed(2),
       base_amount: form.base_amount ? Number(form.base_amount).toFixed(2) : null,
       iva_amount:
@@ -1551,6 +1567,15 @@ function TransaccionForm({ onClose, onSave, initial, categorias, entidadInicial 
         <select style={inputStyle} value={form.entidad} onChange={set("entidad")}>
           {ENTIDADES_FIN.map(([id, n]) => <option key={id} value={id}>{n}</option>)}
         </select>
+
+        {form.entidad === "jmcf" && (
+          <>
+            <label style={label}>Negocio</label>
+            <select style={inputStyle} value={form.negocio} onChange={set("negocio")}>
+              {NEGOCIOS_JMCF.map(([id, n]) => <option key={id} value={id}>{n}</option>)}
+            </select>
+          </>
+        )}
 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
           <div>
@@ -1927,7 +1952,7 @@ function ImportarProveedoresModal({ onClose, tenantId, transacciones }) {
   );
 }
 
-function TransaccionesView({ transacciones, onAdd, categorias, tenantId, entidad, onCambiarEntidad, onBorrar }) {
+function TransaccionesView({ transacciones, onAdd, categorias, tenantId, entidad, onCambiarEntidad, onCambiarNegocio, onBorrar }) {
   const [showForm, setShowForm] = useState(false);
   const [showScan, setShowScan] = useState(false);
   const [showImportar, setShowImportar] = useState(false);
@@ -2028,7 +2053,7 @@ function TransaccionesView({ transacciones, onAdd, categorias, tenantId, entidad
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
             <tr style={{ borderBottom: `1px solid ${theme.border}` }}>
-              {["Fecha", "Categoría", "Proveedor", "Descripción", "Tipo", "Importe", "Entidad", "Archivo", ""].map((h) => (
+              {["Fecha", "Categoría", "Proveedor", "Descripción", "Tipo", "Importe", "Entidad", ...(entidad === "jmcf" ? ["Negocio"] : []), "Archivo", ""].map((h) => (
                 <th
                   key={h}
                   style={{
@@ -2082,6 +2107,22 @@ function TransaccionesView({ transacciones, onAdd, categorias, tenantId, entidad
                     </select>
                   )}
                 </td>
+                {entidad === "jmcf" && (
+                  <td style={{ padding: "12px 16px", fontSize: 13 }}>
+                    {String(t.id).startsWith("academia-") ? (
+                      <span style={{ color: theme.inkSoft }}>Academia</span>
+                    ) : (
+                      <select
+                        value={negocioDeTx(t)}
+                        onChange={(e) => onCambiarNegocio && onCambiarNegocio(t.id, e.target.value)}
+                        style={{ padding: "4px 6px", borderRadius: 6, border: `1px solid ${negocioDeTx(t) === "sin" ? theme.warn : theme.border}`, fontSize: 12, background: "#fff" }}
+                      >
+                        <option value="sin" disabled>Sin asignar</option>
+                        {NEGOCIOS_JMCF.map(([id, n]) => <option key={id} value={id}>{n}</option>)}
+                      </select>
+                    )}
+                  </td>
+                )}
                 <td style={{ padding: "12px 16px", fontSize: 13 }}>
                   {t.ticket_path ? (
                     <button
@@ -5199,6 +5240,13 @@ function App() {
   const [entidad, setEntidad] = useState(() => {
     try { return localStorage.getItem("finanzas_entidad") === "jmcf" ? "jmcf" : "club"; } catch (e) { return "club"; }
   });
+  const [negocio, setNegocio] = useState(() => {
+    try { const v = localStorage.getItem("finanzas_negocio"); return ["proshop", "academia", "sin"].includes(v) ? v : "todo"; } catch (e) { return "todo"; }
+  });
+  const cambiarNegocio = (n) => {
+    setNegocio(n);
+    try { localStorage.setItem("finanzas_negocio", n); } catch (err) { /* sin almacenamiento */ }
+  };
   const cambiarEntidad = (e) => {
     setEntidad(e);
     try { localStorage.setItem("finanzas_entidad", e); } catch (err) { /* sin almacenamiento: no pasa nada */ }
@@ -5260,8 +5308,13 @@ function App() {
   const todasTransacciones = useMemo(() => [...transacciones, ...transaccionesAcademia], [transacciones, transaccionesAcademia]);
 
   // Lo que se ve en Resumen, Transacciones, Informes, Presupuestos y Metas depende de la entidad elegida.
-  const transaccionesVista = useMemo(() => todasTransacciones.filter((t) => entidadDeTx(t) === entidad), [todasTransacciones, entidad]);
-  const ventasProshopVista = entidad === "jmcf" ? ventasProshop : []; // el Proshop es de JMCF
+  const negocioActivo = entidad === "jmcf" ? negocio : "todo"; // el filtro Pro Shop / Academia solo existe dentro de JMCF
+  const sinAsignarJmcf = useMemo(() => todasTransacciones.filter((t) => entidadDeTx(t) === "jmcf" && negocioDeTx(t) === "sin").length, [todasTransacciones]);
+  const transaccionesVista = useMemo(
+    () => todasTransacciones.filter((t) => entidadDeTx(t) === entidad && (negocioActivo === "todo" || negocioDeTx(t) === negocioActivo)),
+    [todasTransacciones, entidad, negocioActivo]
+  );
+  const ventasProshopVista = entidad === "jmcf" && (negocioActivo === "todo" || negocioActivo === "proshop") ? ventasProshop : []; // el Proshop es de JMCF
   const presupuestosVista = useMemo(() => presupuestos.filter((p) => (p.entidad || "club") === entidad), [presupuestos, entidad]);
   const metasVista = useMemo(() => metas.filter((m) => (m.entidad || "club") === entidad), [metas, entidad]);
 
@@ -5285,6 +5338,14 @@ function App() {
     }
     if (t.ticket_path) {
       try { await deleteObject(ref(storage, t.ticket_path)); } catch (e) { console.warn("No se pudo borrar el archivo adjunto:", e); }
+    }
+  };
+
+  const handleCambiarNegocio = async (id, nuevo) => {
+    try {
+      await updateDoc(doc(db, `clubes/${tenantId}/finanzas_transacciones`, id), { negocio: nuevo });
+    } catch (e) {
+      console.warn("No se pudo cambiar el negocio:", e);
     }
   };
 
@@ -5349,6 +5410,22 @@ function App() {
                 }}
               >{nombre}</button>
             ))}
+            {entidad === "jmcf" && (
+              <>
+                <span style={{ fontSize: 12, color: theme.inkSoft, fontWeight: 600, marginLeft: 12 }}>Negocio:</span>
+                {[["todo", "Todo"], ...NEGOCIOS_JMCF, ...(sinAsignarJmcf > 0 ? [["sin", `Sin asignar (${sinAsignarJmcf})`]] : [])].map(([id, n]) => (
+                  <button
+                    key={id}
+                    onClick={() => cambiarNegocio(id)}
+                    style={{
+                      padding: "6px 12px", borderRadius: 999, fontSize: 13, fontWeight: 600, cursor: "pointer",
+                      border: `1px solid ${negocio === id ? theme.accent : theme.border}`,
+                      background: negocio === id ? theme.accentSoft : "#fff", color: theme.ink,
+                    }}
+                  >{n}</button>
+                ))}
+              </>
+            )}
           </div>
         )}
         {active === "resumen" && (
@@ -5361,10 +5438,11 @@ function App() {
             onGuardarCategorias={handleGuardarCategorias}
             tenantId={tenantId}
             ventasEnt={entidad === "jmcf" ? "jmcf" : "gcr"}
+            negocio={negocioActivo}
           />
         )}
         {active === "transacciones" && (
-          <TransaccionesView transacciones={transaccionesVista} onAdd={handleAddTransaccion} categorias={categorias || CATEGORIAS_DEFECTO} tenantId={tenantId} entidad={entidad} onCambiarEntidad={handleCambiarEntidad} onBorrar={handleBorrarTransaccion} />
+          <TransaccionesView transacciones={transaccionesVista} onAdd={handleAddTransaccion} categorias={categorias || CATEGORIAS_DEFECTO} tenantId={tenantId} entidad={entidad} onCambiarEntidad={handleCambiarEntidad} onCambiarNegocio={handleCambiarNegocio} onBorrar={handleBorrarTransaccion} />
         )}
         {active === "informes" && (
           <InformesView transacciones={transaccionesVista} ventasProshop={ventasProshopVista} />
