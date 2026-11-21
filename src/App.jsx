@@ -90,6 +90,13 @@ const entidadDeTx = (t) =>
 const ENTIDADES_FIN = [["club", "Golf Ciudad Real (club)"], ["jmcf", "JMCF · Pro Shop y Academia"], ["personal", "Personal (José)"]];
 // Dentro de JMCF: Pro Shop o Academia. Si la transacción no lo tiene guardado se deduce de la categoría/actividad; si no, queda "sin asignar".
 const NEGOCIOS_JMCF = [["proshop", "Pro Shop"], ["academia", "Academia"]];
+const destinoDeTx = (t) => {
+  const e = entidadDeTx(t);
+  return e === "jmcf" ? negocioDeTx(t) : e; // "club" | "personal" | "proshop" | "academia" | "sin"
+};
+// "Destino" = a qué economía va un movimiento: club, Pro Shop, Academia (las dos de JMCF) o personal.
+const DESTINOS = [["club", "Golf Ciudad Real (club)"], ["proshop", "Pro Shop"], ["academia", "Academia"], ["personal", "Personal (José)"]];
+const destinoAEnt = (d) => (d === "club" ? { entidad: "club", negocio: null } : d === "personal" ? { entidad: "personal", negocio: null } : { entidad: "jmcf", negocio: d });
 const negocioDeTx = (t) => {
   if (t.negocio) return t.negocio;
   if (t.origen === "academia" || String(t.id || "").startsWith("academia-")) return "academia";
@@ -1405,7 +1412,7 @@ function ImportarExcelModal({ onClose, onAdd, categorias }) {
   );
 }
 
-function TransaccionForm({ onClose, onSave, initial, categorias, entidadInicial }) {
+function TransaccionForm({ onClose, onSave, initial, categorias, destinoInicial }) {
   // Categoría sugerida por la IA: se usa la existente que coincida (sin tildes ni mayúsculas); si no hay, la propia sugerencia.
   const tipoInicial = initial?.tipo === "income" ? "income" : "expense";
   const categoriaInicial = (() => {
@@ -1426,8 +1433,7 @@ function TransaccionForm({ onClose, onSave, initial, categorias, entidadInicial 
     iva_type: initial?.ivaPct || "",
     base_amount: initial?.base || (initial?.ivaPct && initial?.amount ? (Number(initial.amount) / (1 + Number(initial.ivaPct) / 100)).toFixed(2) : ""),
     irpf_deductible: "no",
-    entidad: initial?.entidad || entidadInicial || "club",
-    negocio: initial?.negocio || "proshop",
+    destino: initial?.entidad ? (initial.entidad === "jmcf" ? (initial.negocio || "proshop") : initial.entidad) : (destinoInicial || "club"),
   });
 
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
@@ -1439,7 +1445,7 @@ function TransaccionForm({ onClose, onSave, initial, categorias, entidadInicial 
       ...form,
       ticket_path: initial?.ticket?.path || null,
       ticket_nombre: initial?.ticket?.nombre || null,
-      negocio: form.entidad === "jmcf" ? (form.negocio || "proshop") : null,
+      ...destinoAEnt(form.destino),
       amount: Number(form.amount).toFixed(2),
       base_amount: form.base_amount ? Number(form.base_amount).toFixed(2) : null,
       iva_amount:
@@ -1563,19 +1569,10 @@ function TransaccionForm({ onClose, onSave, initial, categorias, entidadInicial 
         <label style={label}>Actividad (opcional: club / mantenimiento...)</label>
         <input style={inputStyle} value={form.activity} onChange={set("activity")} />
 
-        <label style={label}>¿De quién es este gasto o ingreso? (club, JMCF o personal)</label>
-        <select style={inputStyle} value={form.entidad} onChange={set("entidad")}>
-          {ENTIDADES_FIN.map(([id, n]) => <option key={id} value={id}>{n}</option>)}
+        <label style={label}>¿A qué economía va?</label>
+        <select style={inputStyle} value={form.destino} onChange={set("destino")}>
+          {DESTINOS.map(([id, n]) => <option key={id} value={id}>{n}</option>)}
         </select>
-
-        {form.entidad === "jmcf" && (
-          <>
-            <label style={label}>Negocio</label>
-            <select style={inputStyle} value={form.negocio} onChange={set("negocio")}>
-              {NEGOCIOS_JMCF.map(([id, n]) => <option key={id} value={id}>{n}</option>)}
-            </select>
-          </>
-        )}
 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
           <div>
@@ -1952,7 +1949,7 @@ function ImportarProveedoresModal({ onClose, tenantId, transacciones }) {
   );
 }
 
-function TransaccionesView({ transacciones, onAdd, categorias, tenantId, entidad, onCambiarEntidad, onCambiarNegocio, onBorrar }) {
+function TransaccionesView({ transacciones, onAdd, categorias, tenantId, entidad, negocio, onCambiarDestino, onBorrar }) {
   const [showForm, setShowForm] = useState(false);
   const [showScan, setShowScan] = useState(false);
   const [showImportar, setShowImportar] = useState(false);
@@ -2053,7 +2050,7 @@ function TransaccionesView({ transacciones, onAdd, categorias, tenantId, entidad
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
             <tr style={{ borderBottom: `1px solid ${theme.border}` }}>
-              {["Fecha", "Categoría", "Proveedor", "Descripción", "Tipo", "Importe", "Entidad", ...(entidad === "jmcf" ? ["Negocio"] : []), "Archivo", ""].map((h) => (
+              {["Fecha", "Categoría", "Proveedor", "Descripción", "Tipo", "Importe", "Destino", "Archivo", ""].map((h) => (
                 <th
                   key={h}
                   style={{
@@ -2095,35 +2092,18 @@ function TransaccionesView({ transacciones, onAdd, categorias, tenantId, entidad
                 </td>
                 <td style={{ padding: "12px 16px", fontSize: 13 }}>
                   {String(t.id).startsWith("academia-") ? (
-                    <span style={{ color: theme.inkSoft }}>JMCF</span>
+                    <span style={{ color: theme.inkSoft }}>Academia</span>
                   ) : (
                     <select
-                      value={entidadDeTx(t)}
-                      onChange={(e) => onCambiarEntidad && onCambiarEntidad(t.id, e.target.value)}
-                      style={{ padding: "4px 6px", borderRadius: 6, border: `1px solid ${theme.border}`, fontSize: 12, background: "#fff" }}
+                      value={destinoDeTx(t)}
+                      onChange={(e) => onCambiarDestino && onCambiarDestino(t.id, e.target.value)}
+                      style={{ padding: "4px 6px", borderRadius: 6, border: `1px solid ${destinoDeTx(t) === "sin" ? theme.warn : theme.border}`, fontSize: 12, background: "#fff" }}
                     >
-                      <option value="club">Club</option>
-                      <option value="jmcf">JMCF</option>
-                      <option value="personal">Personal</option>
+                      <option value="sin" disabled>Sin asignar (JMCF)</option>
+                      {DESTINOS.map(([id, n]) => <option key={id} value={id}>{n}</option>)}
                     </select>
                   )}
                 </td>
-                {entidad === "jmcf" && (
-                  <td style={{ padding: "12px 16px", fontSize: 13 }}>
-                    {String(t.id).startsWith("academia-") ? (
-                      <span style={{ color: theme.inkSoft }}>Academia</span>
-                    ) : (
-                      <select
-                        value={negocioDeTx(t)}
-                        onChange={(e) => onCambiarNegocio && onCambiarNegocio(t.id, e.target.value)}
-                        style={{ padding: "4px 6px", borderRadius: 6, border: `1px solid ${negocioDeTx(t) === "sin" ? theme.warn : theme.border}`, fontSize: 12, background: "#fff" }}
-                      >
-                        <option value="sin" disabled>Sin asignar</option>
-                        {NEGOCIOS_JMCF.map(([id, n]) => <option key={id} value={id}>{n}</option>)}
-                      </select>
-                    )}
-                  </td>
-                )}
                 <td style={{ padding: "12px 16px", fontSize: 13 }}>
                   {t.ticket_path ? (
                     <button
@@ -2177,7 +2157,7 @@ function TransaccionesView({ transacciones, onAdd, categorias, tenantId, entidad
       {showForm && (
         <TransaccionForm
           initial={datosDetectados}
-          entidadInicial={entidad}
+          destinoInicial={entidad === "jmcf" ? (negocio === "academia" ? "academia" : "proshop") : entidad}
           categorias={categorias}
           onClose={() => { setShowForm(false); setDatosDetectados(null); }}
           onSave={(data) => {
@@ -5342,11 +5322,11 @@ function App() {
     }
   };
 
-  const handleCambiarNegocio = async (id, nuevo) => {
+  const handleCambiarDestino = async (id, destino) => {
     try {
-      await updateDoc(doc(db, `clubes/${tenantId}/finanzas_transacciones`, id), { negocio: nuevo });
+      await updateDoc(doc(db, `clubes/${tenantId}/finanzas_transacciones`, id), destinoAEnt(destino));
     } catch (e) {
-      console.warn("No se pudo cambiar el negocio:", e);
+      console.warn("No se pudo cambiar el destino:", e);
     }
   };
 
@@ -5400,33 +5380,26 @@ function App() {
         {["resumen", "transacciones", "informes", "gestoria", "pyg", "presupuestos", "metas"].includes(active) && (
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
             <span style={{ fontSize: 12, color: theme.inkSoft, fontWeight: 600 }}>Finanzas de:</span>
-            {ENTIDADES_FIN.map(([id, nombre]) => (
-              <button
-                key={id}
-                onClick={() => cambiarEntidad(id)}
-                style={{
-                  padding: "6px 12px", borderRadius: 999, fontSize: 13, fontWeight: 600, cursor: "pointer",
-                  border: `1px solid ${entidad === id ? theme.pine : theme.border}`,
-                  background: entidad === id ? theme.pine : "#fff", color: entidad === id ? "#fff" : theme.ink,
-                }}
-              >{nombre}</button>
-            ))}
-            {entidad === "jmcf" && (
-              <>
-                <span style={{ fontSize: 12, color: theme.inkSoft, fontWeight: 600, marginLeft: 12 }}>Negocio:</span>
-                {[["todo", "Todo"], ...NEGOCIOS_JMCF, ...(sinAsignarJmcf > 0 ? [["sin", `Sin asignar (${sinAsignarJmcf})`]] : [])].map(([id, n]) => (
-                  <button
-                    key={id}
-                    onClick={() => cambiarNegocio(id)}
-                    style={{
-                      padding: "6px 12px", borderRadius: 999, fontSize: 13, fontWeight: 600, cursor: "pointer",
-                      border: `1px solid ${negocio === id ? theme.accent : theme.border}`,
-                      background: negocio === id ? theme.accentSoft : "#fff", color: theme.ink,
-                    }}
-                  >{n}</button>
-                ))}
-              </>
-            )}
+            {(() => {
+              const vistaActual = entidad === "jmcf" ? (negocio === "proshop" || negocio === "academia" || negocio === "sin" ? negocio : "jmcf") : entidad;
+              const opciones = [["club", "Golf Ciudad Real (club)"], ["proshop", "Pro Shop"], ["academia", "Academia"], ["jmcf", "JMCF (Pro Shop + Academia)"], ["personal", "Personal (José)"]];
+              if (sinAsignarJmcf > 0) opciones.push(["sin", `Sin asignar (${sinAsignarJmcf})`]);
+              const elegir = (id) => {
+                if (id === "club" || id === "personal") { cambiarEntidad(id); cambiarNegocio("todo"); }
+                else { cambiarEntidad("jmcf"); cambiarNegocio(id === "jmcf" ? "todo" : id); }
+              };
+              return opciones.map(([id, nombre]) => (
+                <button
+                  key={id}
+                  onClick={() => elegir(id)}
+                  style={{
+                    padding: "6px 12px", borderRadius: 999, fontSize: 13, fontWeight: 600, cursor: "pointer",
+                    border: `1px solid ${vistaActual === id ? theme.pine : theme.border}`,
+                    background: vistaActual === id ? theme.pine : "#fff", color: vistaActual === id ? "#fff" : theme.ink,
+                  }}
+                >{nombre}</button>
+              ));
+            })()}
           </div>
         )}
         {active === "resumen" && (
@@ -5443,7 +5416,7 @@ function App() {
           />
         )}
         {active === "transacciones" && (
-          <TransaccionesView transacciones={transaccionesVista} onAdd={handleAddTransaccion} categorias={categorias || CATEGORIAS_DEFECTO} tenantId={tenantId} entidad={entidad} onCambiarEntidad={handleCambiarEntidad} onCambiarNegocio={handleCambiarNegocio} onBorrar={handleBorrarTransaccion} />
+          <TransaccionesView transacciones={transaccionesVista} onAdd={handleAddTransaccion} categorias={categorias || CATEGORIAS_DEFECTO} tenantId={tenantId} entidad={entidad} negocio={negocioActivo} onCambiarDestino={handleCambiarDestino} onBorrar={handleBorrarTransaccion} />
         )}
         {active === "informes" && (
           <InformesView transacciones={transaccionesVista} ventasProshop={ventasProshopVista} />
