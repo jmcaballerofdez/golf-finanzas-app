@@ -5464,7 +5464,10 @@ function App() {
 // con datos reales. NO toca las categorías configuradas ni las ventas
 // de Proshop (esas no son "datos ficticios" de Finanzas).
 function AjustesView({ transacciones, presupuestos, metas, tareas }) {
-  const [seleccion, setSeleccion] = useState({ transacciones: true, presupuestos: true, metas: true, tareas: true });
+  const [seleccion, setSeleccion] = useState({ transacciones: true, presupuestos: true, metas: true, tareas: false, ventas: true, archivos: false });
+  const [copiaHecha, setCopiaHecha] = useState(false);
+  const [copiando, setCopiando] = useState(false);
+  const [errorCopia, setErrorCopia] = useState("");
   const [confirmando, setConfirmando] = useState(false);
   const [textoConfirmacion, setTextoConfirmacion] = useState("");
   const [borrando, setBorrando] = useState(false);
@@ -5485,8 +5488,28 @@ function AjustesView({ transacciones, presupuestos, metas, tareas }) {
     metas: metas.length,
     tareas: tareas.length,
   };
-  const totalSeleccionado = Object.entries(seleccion).reduce((s, [k, v]) => s + (v ? conteos[k] : 0), 0);
+  const totalSeleccionado = ["transacciones", "presupuestos", "metas", "tareas"].reduce((s, k) => s + (seleccion[k] ? conteos[k] : 0), 0);
   const nadaSeleccionado = Object.values(seleccion).every((v) => !v);
+  const hayAlgo = totalSeleccionado > 0 || seleccion.ventas;
+
+  // Copia de seguridad en Excel (transacciones, presupuestos, metas) antes de borrar.
+  async function descargarCopia() {
+    setCopiando(true); setErrorCopia("");
+    try {
+      const XLSX = await import("xlsx");
+      const fmt = (v) => (typeof v?.toDate === "function" ? v.toDate().toISOString() : v ?? "");
+      const planas = (arr) => arr.map((o) => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, typeof v === "object" && v !== null && typeof v?.toDate !== "function" ? JSON.stringify(v) : fmt(v)])));
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(planas(transacciones)), "Transacciones");
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(planas(presupuestos)), "Presupuestos");
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(planas(metas)), "Metas");
+      XLSX.writeFile(wb, `copia_finanzas_${new Date().toISOString().slice(0, 10)}.xlsx`);
+      setCopiaHecha(true);
+    } catch (e) {
+      setErrorCopia("No se ha podido crear la copia: " + (e?.message || e));
+    }
+    setCopiando(false);
+  }
 
   const coleccionesPorClave = {
     transacciones: { ruta: "finanzas_transacciones", items: transacciones },
@@ -5498,12 +5521,34 @@ function AjustesView({ transacciones, presupuestos, metas, tareas }) {
   async function borrarSeleccion() {
     setBorrando(true);
     setHecho(false);
-    const total = totalSeleccionado;
     let hechos = 0;
+    let total = totalSeleccionado;
     setProgreso({ hechos: 0, total, seccion: "" });
     try {
+      // Ventas importadas del Excel del TPV (club y JMCF): un documento por mes.
+      const ventasDocs = [];
+      if (seleccion.ventas) {
+        for (const col of ["ventas_gcr", "ventas_jmcf"]) {
+          const snap = await getDocs(collection(db, `clubes/${tenantId}/${col}`));
+          snap.docs.forEach((d) => ventasDocs.push(doc(db, `clubes/${tenantId}/${col}`, d.id)));
+        }
+        total += ventasDocs.length;
+        setProgreso({ hechos: 0, total, seccion: "Ventas del Excel" });
+      }
+      // Archivos de tickets guardados en Storage (opcional).
+      if (seleccion.archivos) {
+        for (const t of transacciones) {
+          if (t.ticket_path) { try { await deleteObject(ref(storage, t.ticket_path)); } catch (e) { console.warn("Archivo no borrado:", e); } }
+        }
+      }
+      for (let i = 0; i < ventasDocs.length; i += 20) {
+        const lote = ventasDocs.slice(i, i + 20);
+        await Promise.all(lote.map((r) => deleteDoc(r)));
+        hechos += lote.length;
+        setProgreso({ hechos, total, seccion: "Ventas del Excel" });
+      }
       for (const [clave, activo] of Object.entries(seleccion)) {
-        if (!activo) continue;
+        if (!activo || !coleccionesPorClave[clave]) continue;
         const { ruta, items } = coleccionesPorClave[clave];
         const validos = items.filter((it) => typeof it.id === "string" && it.id.length > 0);
         // Borrado por lotes: más estable con muchos registros y permite
@@ -5533,12 +5578,12 @@ function AjustesView({ transacciones, presupuestos, metas, tareas }) {
       <Card style={{ border: `1px solid ${theme.danger}55` }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
           <AlertOctagon size={19} color={theme.danger} />
-          <div style={{ fontWeight: 700, color: theme.danger }}>Borrar datos de prueba</div>
+          <div style={{ fontWeight: 700, color: theme.danger }}>Empezar de cero: borrar datos económicos</div>
         </div>
         <p style={{ fontSize: 13, color: theme.inkSoft, marginBottom: 18 }}>
-          Usa esto para vaciar los datos ficticios/de prueba que haya en Finanzas y empezar a trabajar con datos reales.
-          Esta acción <b>no se puede deshacer</b>. No afecta a tus categorías configuradas ni a las ventas de Proshop
-          (esas se leen automáticamente y no son "datos" de Finanzas).
+          Vacía los datos económicos de Finanzas para volver a subirlos de forma ordenada. Esta acción <b>no se puede deshacer</b>.
+          No toca tus categorías configuradas, los cobros de la app de Academia ni las ventas en vivo del Pro Shop (se leen de sus propias apps).
+          Primero descarga la copia de seguridad: hasta que lo hagas, el borrado está bloqueado.
         </p>
 
         <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 18 }}>
@@ -5547,6 +5592,8 @@ function AjustesView({ transacciones, presupuestos, metas, tareas }) {
             { clave: "presupuestos", label: "Presupuestos" },
             { clave: "metas", label: "Metas" },
             { clave: "tareas", label: "Tareas" },
+            { clave: "ventas", label: "Ventas importadas del Excel del TPV (club y JMCF)", sinConteo: true },
+            { clave: "archivos", label: "También los archivos de tickets guardados (fotos y PDF)", sinConteo: true },
           ].map((c) => (
             <label key={c.clave} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13.5, color: theme.ink, cursor: "pointer" }}>
               <input
@@ -5555,22 +5602,32 @@ function AjustesView({ transacciones, presupuestos, metas, tareas }) {
                 onChange={(e) => setSeleccion({ ...seleccion, [c.clave]: e.target.checked })}
               />
               {c.label}
-              <span style={{ color: theme.inkSoft, fontSize: 12 }}>({conteos[c.clave]} registro{conteos[c.clave] !== 1 ? "s" : ""})</span>
+              {!c.sinConteo && <span style={{ color: theme.inkSoft, fontSize: 12 }}>({conteos[c.clave]} registro{conteos[c.clave] !== 1 ? "s" : ""})</span>}
             </label>
           ))}
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
+          <button
+            onClick={descargarCopia}
+            disabled={copiando}
+            style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 18px", borderRadius: 10, border: "none", background: theme.pine, color: "#fff", fontWeight: 700, fontSize: 13.5, cursor: copiando ? "default" : "pointer" }}
+          ><Download size={16} /> {copiando ? "Preparando…" : "1. Descargar copia de seguridad (Excel)"}</button>
+          {copiaHecha && <span style={{ fontSize: 13, color: theme.success }}>Copia descargada. Revisa que se ha guardado en tu carpeta Descargas.</span>}
+          {errorCopia && <span style={{ fontSize: 13, color: theme.danger }}>{errorCopia}</span>}
         </div>
 
         {!confirmando ? (
           <button
             onClick={() => setConfirmando(true)}
-            disabled={nadaSeleccionado || totalSeleccionado === 0}
+            disabled={nadaSeleccionado || !hayAlgo || !copiaHecha}
             style={{
               display: "flex", alignItems: "center", gap: 8, padding: "10px 18px", borderRadius: 10, border: "none",
-              background: nadaSeleccionado || totalSeleccionado === 0 ? theme.border : theme.danger, color: "#fff",
-              fontWeight: 700, fontSize: 13.5, cursor: nadaSeleccionado || totalSeleccionado === 0 ? "default" : "pointer",
+              background: nadaSeleccionado || !hayAlgo || !copiaHecha ? theme.border : theme.danger, color: "#fff",
+              fontWeight: 700, fontSize: 13.5, cursor: nadaSeleccionado || !hayAlgo || !copiaHecha ? "default" : "pointer",
             }}
           >
-            <Trash2 size={16} /> Borrar {totalSeleccionado} registro{totalSeleccionado !== 1 ? "s" : ""} seleccionado{totalSeleccionado !== 1 ? "s" : ""}
+            <Trash2 size={16} /> 2. Borrar lo seleccionado{totalSeleccionado > 0 ? ` (${totalSeleccionado} registro${totalSeleccionado !== 1 ? "s" : ""}${seleccion.ventas ? " + ventas del Excel" : ""})` : ""}
           </button>
         ) : (
           <div style={{ background: "#FCEBE6", borderRadius: 10, padding: 16 }}>
@@ -5598,7 +5655,7 @@ function AjustesView({ transacciones, presupuestos, metas, tareas }) {
             ) : (
             <div>
             <p style={{ fontSize: 13.5, color: theme.danger, fontWeight: 600, marginBottom: 10 }}>
-              Vas a borrar {totalSeleccionado} registro{totalSeleccionado !== 1 ? "s" : ""} de forma permanente. Escribe BORRAR para confirmar:
+              Vas a borrar de forma permanente {totalSeleccionado} registro{totalSeleccionado !== 1 ? "s" : ""}{seleccion.ventas ? " y todas las ventas importadas del Excel" : ""}{seleccion.archivos ? ", y los archivos de tickets" : ""}. Escribe BORRAR para confirmar:
             </p>
             <input
               value={textoConfirmacion}
