@@ -96,6 +96,8 @@ const destinoDeTx = (t) => {
 };
 // "Destino" = a qué economía va un movimiento: club, Pro Shop, Academia (las dos de JMCF) o personal.
 const DESTINOS = [["club", "Golf Ciudad Real (club)"], ["proshop", "Pro Shop"], ["academia", "Academia"], ["personal", "Personal (José)"], ["piso", "Piso de Burgos"]];
+// Forma de pago de los movimientos de tus actividades (para pasar los datos a la gestoría). Mismos nombres que en la app de Academia.
+const METODOS_PAGO = ["Efectivo", "Tarjeta", "Bizum", "Transferencia"];
 const destinoAEnt = (d) => (d === "club" ? { entidad: "club", negocio: null } : { entidad: "jmcf", negocio: d });
 // Categorías sugeridas para el piso de Burgos (se puede escribir cualquier otra).
 const CATEGORIAS_PISO = {
@@ -1445,6 +1447,7 @@ function TransaccionForm({ onClose, onSave, initial, categorias, destinoInicial 
     iva_type: initial?.ivaPct || "",
     base_amount: initial?.base || (initial?.ivaPct && initial?.amount ? (Number(initial.amount) / (1 + Number(initial.ivaPct) / 100)).toFixed(2) : ""),
     irpf_deductible: "no",
+    metodo_pago: initial?.metodo_pago || "",
     destino: initial?.entidad ? (initial.entidad === "jmcf" ? (initial.negocio || "proshop") : initial.entidad) : (destinoInicial || "club"),
   });
 
@@ -1458,6 +1461,7 @@ function TransaccionForm({ onClose, onSave, initial, categorias, destinoInicial 
       ticket_path: initial?.ticket?.path || null,
       ticket_nombre: initial?.ticket?.nombre || null,
       ...destinoAEnt(form.destino),
+      metodo_pago: form.destino === "club" ? "" : form.metodo_pago || "",
       amount: Number(form.amount).toFixed(2),
       base_amount: form.base_amount ? Number(form.base_amount).toFixed(2) : null,
       iva_amount:
@@ -1585,6 +1589,16 @@ function TransaccionForm({ onClose, onSave, initial, categorias, destinoInicial 
         <select style={inputStyle} value={form.destino} onChange={set("destino")}>
           {DESTINOS.map(([id, n]) => <option key={id} value={id}>{n}</option>)}
         </select>
+
+        {form.destino !== "club" && (
+          <>
+            <label style={label}>Forma de pago</label>
+            <select style={inputStyle} value={form.metodo_pago} onChange={set("metodo_pago")}>
+              <option value="">Sin indicar</option>
+              {METODOS_PAGO.map((m) => <option key={m} value={m}>{m}</option>)}
+            </select>
+          </>
+        )}
 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
           <div>
@@ -1961,7 +1975,7 @@ function ImportarProveedoresModal({ onClose, tenantId, transacciones }) {
   );
 }
 
-function TransaccionesView({ transacciones, onAdd, categorias, tenantId, entidad, negocio, onCambiarDestino, onBorrar }) {
+function TransaccionesView({ transacciones, onAdd, categorias, tenantId, entidad, negocio, onCambiarDestino, onCambiarPago, onBorrar }) {
   const [showForm, setShowForm] = useState(false);
   const [showScan, setShowScan] = useState(false);
   const [showImportar, setShowImportar] = useState(false);
@@ -2062,7 +2076,7 @@ function TransaccionesView({ transacciones, onAdd, categorias, tenantId, entidad
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
             <tr style={{ borderBottom: `1px solid ${theme.border}` }}>
-              {["Fecha", "Categoría", "Proveedor", "Descripción", "Tipo", "Importe", "Destino", "Archivo", ""].map((h) => (
+              {["Fecha", "Categoría", "Proveedor", "Descripción", "Tipo", "Importe", "Destino", ...(entidad === "jmcf" ? ["Pago"] : []), "Archivo", ""].map((h) => (
                 <th
                   key={h}
                   style={{
@@ -2116,6 +2130,22 @@ function TransaccionesView({ transacciones, onAdd, categorias, tenantId, entidad
                     </select>
                   )}
                 </td>
+                {entidad === "jmcf" && (
+                  <td style={{ padding: "12px 16px", fontSize: 13 }}>
+                    {String(t.id).startsWith("academia-") ? (
+                      <span style={{ color: theme.inkSoft }}>{t.metodo_pago || "—"}</span>
+                    ) : (
+                      <select
+                        value={t.metodo_pago || ""}
+                        onChange={(e) => onCambiarPago && onCambiarPago(t.id, e.target.value)}
+                        style={{ padding: "4px 6px", borderRadius: 6, border: `1px solid ${theme.border}`, fontSize: 12, background: "#fff" }}
+                      >
+                        <option value="">—</option>
+                        {METODOS_PAGO.map((m) => <option key={m} value={m}>{m}</option>)}
+                      </select>
+                    )}
+                  </td>
+                )}
                 <td style={{ padding: "12px 16px", fontSize: 13 }}>
                   {t.ticket_path ? (
                     <button
@@ -3452,6 +3482,7 @@ async function gzExcel(txs, nombres, titulo) {
     { header: "IVA %", key: "p", width: 8 },
     { header: "IVA €", key: "i", width: 12 },
     { header: "Total", key: "n", width: 14 },
+    { header: "Forma de pago", key: "m", width: 16 },
     { header: "Archivo", key: "a", width: 52 },
   ];
   ws.getRow(1).font = { bold: true };
@@ -3465,7 +3496,7 @@ async function gzExcel(txs, nombres, titulo) {
     ws.addRow({
       f: aFecha(t.date), t: t.type === "income" ? "Ingreso" : "Gasto", c: t.category || "", s: t.subcategory || "", v: t.proveedor || "", d: t.description || "",
       b: base, p: t.iva_type !== "" && t.iva_type !== null && t.iva_type !== undefined ? Number(String(t.iva_type).replace("%", "")) : null,
-      i: iva, n: total, a: nombres[t.id] ? `archivos/${nombres[t.id]}` : "",
+      i: iva, n: total, m: t.metodo_pago || "", a: nombres[t.id] ? `archivos/${nombres[t.id]}` : "",
     });
   });
   ws.getColumn("f").numFmt = "dd/mm/yyyy";
@@ -5295,6 +5326,7 @@ function App() {
       amount: Number(i.importeTotal ?? i.importeBase ?? 0),
       date: new Date((i.fecha || "") + "T12:00:00").toISOString(),
       activity: "Academia", iva_type: i.ivaPct ? String(i.ivaPct) + "%" : "", base_amount: i.importeBase ?? null, irpf_deductible: "no",
+      metodo_pago: i.metodo || "",
       origen: "academia",
     }))
     .filter((t) => t.amount > 0 && !isNaN(new Date(t.date))), [ingresosAcademia]);
@@ -5331,6 +5363,14 @@ function App() {
     }
     if (t.ticket_path) {
       try { await deleteObject(ref(storage, t.ticket_path)); } catch (e) { console.warn("No se pudo borrar el archivo adjunto:", e); }
+    }
+  };
+
+  const handleCambiarPago = async (id, metodo) => {
+    try {
+      await updateDoc(doc(db, `clubes/${tenantId}/finanzas_transacciones`, id), { metodo_pago: metodo });
+    } catch (e) {
+      console.warn("No se pudo cambiar la forma de pago:", e);
     }
   };
 
@@ -5435,7 +5475,7 @@ function App() {
           />
         )}
         {active === "transacciones" && (
-          <TransaccionesView transacciones={transaccionesVista} onAdd={handleAddTransaccion} categorias={categorias || CATEGORIAS_DEFECTO} tenantId={tenantId} entidad={entidad} negocio={negocioActivo} onCambiarDestino={handleCambiarDestino} onBorrar={handleBorrarTransaccion} />
+          <TransaccionesView transacciones={transaccionesVista} onAdd={handleAddTransaccion} categorias={categorias || CATEGORIAS_DEFECTO} tenantId={tenantId} entidad={entidad} negocio={negocioActivo} onCambiarDestino={handleCambiarDestino} onCambiarPago={handleCambiarPago} onBorrar={handleBorrarTransaccion} />
         )}
         {active === "informes" && (
           <InformesView transacciones={transaccionesVista} ventasProshop={ventasProshopVista} />
