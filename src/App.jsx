@@ -1426,49 +1426,122 @@ function ImportarExcelModal({ onClose, onAdd, categorias }) {
   );
 }
 
-function TransaccionForm({ onClose, onSave, initial, categorias, destinoInicial }) {
+function TransaccionForm({ onClose, onSave, onSaveVarios, onUpdate, onUpdateVarios, initial, categorias, destinoInicial, editando }) {
   // Categoría sugerida por la IA: se usa la existente que coincida (sin tildes ni mayúsculas); si no hay, la propia sugerencia.
-  const tipoInicial = initial?.tipo === "income" ? "income" : "expense";
+  const tipoInicial = editando ? (editando.type === "income" ? "income" : "expense") : initial?.tipo === "income" ? "income" : "expense";
   const categoriaInicial = (() => {
     const sug = initial?.categoriaSugerida;
     if (!sug) return "";
     const lista = (tipoInicial === "income" ? categorias?.ingresos : categorias?.gastos) || [];
     return lista.find((c) => normTx(c) === normTx(sug)) || sug;
   })();
-  const [form, setForm] = useState({
-    type: tipoInicial,
-    category: categoriaInicial,
-    subcategory: "",
-    proveedor: initial?.proveedor || "",
-    description: initial?.description || "",
-    amount: initial?.amount || "",
-    date: initial?.date || new Date().toISOString().slice(0, 10),
-    activity: "",
-    iva_type: initial?.ivaPct || "",
-    base_amount: initial?.base || (initial?.ivaPct && initial?.amount ? (Number(initial.amount) / (1 + Number(initial.ivaPct) / 100)).toFixed(2) : ""),
-    irpf_deductible: "no",
-    metodo_pago: initial?.metodo_pago || "",
-    destino: initial?.entidad ? (initial.entidad === "jmcf" ? (initial.negocio || "proshop") : initial.entidad) : (destinoInicial || "club"),
-  });
+  const fechaOriginal = editando ? gzIso(aFecha(editando.date)) : "";
+  const [form, setForm] = useState(
+    editando
+      ? {
+          type: tipoInicial,
+          category: editando.category || "",
+          subcategory: editando.subcategory || "",
+          proveedor: editando.proveedor || "",
+          description: editando.description || "",
+          amount: editando.amount != null ? String(editando.amount) : "",
+          date: fechaOriginal,
+          activity: editando.activity || "",
+          iva_type: editando.iva_type || "",
+          base_amount: editando.base_amount != null && editando.base_amount !== "" ? String(editando.base_amount) : "",
+          irpf_deductible: editando.irpf_deductible || "no",
+          metodo_pago: editando.metodo_pago || "",
+          destino: destinoDeTx(editando) === "sin" ? (destinoInicial || "club") : destinoDeTx(editando),
+        }
+      : {
+          type: tipoInicial,
+          category: categoriaInicial,
+          subcategory: "",
+          proveedor: initial?.proveedor || "",
+          description: initial?.description || "",
+          amount: initial?.amount || "",
+          date: initial?.date || new Date().toISOString().slice(0, 10),
+          activity: "",
+          iva_type: initial?.ivaPct || "",
+          base_amount: initial?.base || (initial?.ivaPct && initial?.amount ? (Number(initial.amount) / (1 + Number(initial.ivaPct) / 100)).toFixed(2) : ""),
+          irpf_deductible: "no",
+          metodo_pago: initial?.metodo_pago || "",
+          destino: initial?.entidad ? (initial.entidad === "jmcf" ? (initial.negocio || "proshop") : initial.entidad) : (destinoInicial || "club"),
+        }
+  );
+  // Reparto de un ticket compartido entre varias economías / categorías
+  const [reparto, setReparto] = useState(false);
+  const [lineas, setLineas] = useState([
+    { destino: form.destino, category: "", amount: "" },
+    { destino: form.destino === "club" ? "proshop" : "club", category: "", amount: "" },
+  ]);
+  const totalTicket = Number(form.amount) || 0;
+  const sumaOtras = lineas.slice(0, -1).reduce((s, l) => s + (Number(l.amount) || 0), 0);
+  const resto = Math.round((totalTicket - sumaOtras) * 100) / 100;
+  const setLinea = (i, k, v) => setLineas(lineas.map((l, j) => (j === i ? { ...l, [k]: v } : l)));
 
   const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
 
   const submit = (e) => {
     e.preventDefault();
-    if (!form.category || !form.amount) return;
-    onSave({
+    if (!form.amount) return;
+    const iso = new Date(form.date).toISOString();
+    const base = form.base_amount ? Number(form.base_amount) : null;
+    const ivaPct = form.iva_type ? Number(form.iva_type) : null;
+
+    if (reparto) {
+      if (!(totalTicket > 0)) { window.alert("Pon primero el importe total del ticket."); return; }
+      const gid = `gt-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+      const datas = lineas.map((l, i) => {
+        const imp = i === lineas.length - 1 ? resto : Number(l.amount) || 0;
+        const baseL = base != null ? (base * imp) / totalTicket : null;
+        return {
+          type: form.type,
+          category: l.category.trim() || form.category.trim(),
+          subcategory: form.subcategory,
+          proveedor: form.proveedor,
+          description: form.description,
+          activity: form.activity,
+          iva_type: form.iva_type,
+          irpf_deductible: form.irpf_deductible,
+          date: iso,
+          amount: imp.toFixed(2),
+          base_amount: baseL != null ? baseL.toFixed(2) : null,
+          iva_amount: baseL != null && ivaPct != null ? (baseL * (ivaPct / 100)).toFixed(2) : null,
+          ...destinoAEnt(l.destino),
+          metodo_pago: l.destino === "club" ? "" : form.metodo_pago || "",
+          grupo_ticket: gid,
+          importe_ticket: totalTicket.toFixed(2),
+        };
+      });
+      if (datas.some((d) => !(Number(d.amount) > 0))) { window.alert("Todas las líneas deben tener un importe mayor que 0. La última se calcula sola con lo que falta por repartir."); return; }
+      if (datas.some((d) => !d.category)) { window.alert("Pon una categoría en cada línea (o una general arriba)."); return; }
+      if (editando) { onUpdateVarios && onUpdateVarios(editando.id, datas); return; }
+      onSaveVarios && onSaveVarios(datas.map((d) => ({ ...d, ticket_path: initial?.ticket?.path || null, ticket_nombre: initial?.ticket?.nombre || null })));
+      return;
+    }
+
+    if (!form.category) { window.alert("Elige o escribe una categoría."); return; }
+    const comun = {
       ...form,
-      ticket_path: initial?.ticket?.path || null,
-      ticket_nombre: initial?.ticket?.nombre || null,
       ...destinoAEnt(form.destino),
       metodo_pago: form.destino === "club" ? "" : form.metodo_pago || "",
       amount: Number(form.amount).toFixed(2),
       base_amount: form.base_amount ? Number(form.base_amount).toFixed(2) : null,
-      iva_amount:
-        form.base_amount && form.iva_type
-          ? (Number(form.base_amount) * (Number(form.iva_type) / 100)).toFixed(2)
-          : null,
-      date: new Date(form.date).toISOString(),
+      iva_amount: form.base_amount && form.iva_type ? (Number(form.base_amount) * (Number(form.iva_type) / 100)).toFixed(2) : null,
+    };
+    if (editando) {
+      const cambios = { ...comun };
+      if (form.date === fechaOriginal) delete cambios.date; // no se toca la fecha original si no la has cambiado
+      else cambios.date = iso;
+      onUpdate && onUpdate(editando.id, cambios);
+      return;
+    }
+    onSave({
+      ...comun,
+      ticket_path: initial?.ticket?.path || null,
+      ticket_nombre: initial?.ticket?.nombre || null,
+      date: iso,
     });
   };
 
@@ -1497,16 +1570,16 @@ function TransaccionForm({ onClose, onSave, initial, categorias, destinoInicial 
       <form
         onSubmit={submit}
         className="shadow-lg rounded-2xl"
-        style={{ background: theme.surface, padding: 24, width: 420, maxHeight: "90vh", overflowY: "auto" }}
+        style={{ background: theme.surface, padding: 24, width: reparto ? 560 : 420, maxWidth: "95vw", maxHeight: "90vh", overflowY: "auto" }}
       >
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-          <div style={{ fontWeight: 700, fontSize: 16, color: theme.ink }}>Nueva transacción</div>
+          <div style={{ fontWeight: 700, fontSize: 16, color: theme.ink }}>{editando ? "Editar transacción" : "Nueva transacción"}</div>
           <button type="button" onClick={onClose} style={{ border: "none", background: "none", cursor: "pointer" }}>
             <X size={18} />
           </button>
         </div>
 
-        {initial && (
+        {initial && !editando && (
           <div
             style={{
               display: "flex", alignItems: "center", gap: 8, background: theme.accentSoft,
@@ -1519,6 +1592,11 @@ function TransaccionForm({ onClose, onSave, initial, categorias, destinoInicial 
         )}
         {initial?.aviso && (
           <div style={{ background: "#FBEAE5", color: theme.danger, borderRadius: 8, padding: "8px 12px", fontSize: 12.5, marginBottom: 10 }}>{initial.aviso}</div>
+        )}
+        {editando?.ticket_path && (
+          <div style={{ background: "#E7F3EB", color: theme.success, borderRadius: 8, padding: "8px 12px", fontSize: 12.5, marginBottom: 10 }}>
+            📎 Esta transacción tiene archivo adjunto: se conserva.
+          </div>
         )}
         {initial?.ticket && (
           <div style={{ background: "#E7F3EB", color: theme.success, borderRadius: 8, padding: "8px 12px", fontSize: 12.5, marginBottom: 10 }}>
@@ -1554,7 +1632,7 @@ function TransaccionForm({ onClose, onSave, initial, categorias, destinoInicial 
         </div>
 
         <label style={label}>Categoría</label>
-        <input style={inputStyle} value={form.category} onChange={set("category")} required list="lista-categorias" placeholder="Elige o escribe una nueva…" />
+        <input style={inputStyle} value={form.category} onChange={set("category")} list="lista-categorias" placeholder="Elige o escribe una nueva…" />
         <datalist id="lista-categorias">
           {((form.destino === "piso" ? CATEGORIAS_PISO : categorias) || {})[form.type === "income" ? "ingresos" : "gastos"]?.map((c) => <option key={c} value={c} />)}
         </datalist>
@@ -1611,6 +1689,45 @@ function TransaccionForm({ onClose, onSave, initial, categorias, destinoInicial 
           </div>
         </div>
 
+        <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 14, fontSize: 13, fontWeight: 600, color: theme.ink, cursor: "pointer" }}>
+          <input type="checkbox" checked={reparto} onChange={(e) => setReparto(e.target.checked)} />
+          Ticket compartido: repartirlo entre varias economías o categorías
+        </label>
+        {reparto && (
+          <div style={{ marginTop: 10, border: `1px solid ${theme.border}`, borderRadius: 10, padding: 10, background: "#FBFAF6" }}>
+            <div style={{ fontSize: 12.5, color: theme.inkSoft, marginBottom: 8 }}>
+              Total del ticket: <b>{fmtEUR(totalTicket)}</b> · la última línea se calcula sola con lo que falta.
+            </div>
+            {lineas.map((l, i) => {
+              const esUltima = i === lineas.length - 1;
+              return (
+                <div key={i} style={{ display: "grid", gridTemplateColumns: "1.3fr 1.2fr 0.8fr auto", gap: 6, marginBottom: 6, alignItems: "center" }}>
+                  <select style={{ ...inputStyle, marginTop: 0 }} value={l.destino} onChange={(e) => setLinea(i, "destino", e.target.value)}>
+                    {DESTINOS.map(([id, n]) => <option key={id} value={id}>{n}</option>)}
+                  </select>
+                  <input style={{ ...inputStyle, marginTop: 0 }} value={l.category} onChange={(e) => setLinea(i, "category", e.target.value)} list="lista-categorias" placeholder={form.category || "Categoría"} />
+                  <input
+                    style={{ ...inputStyle, marginTop: 0, background: esUltima ? "#F1F1EC" : undefined }}
+                    type="number" step="0.01"
+                    value={esUltima ? (resto > 0 || sumaOtras > 0 ? resto.toFixed(2) : "") : l.amount}
+                    readOnly={esUltima}
+                    onChange={(e) => setLinea(i, "amount", e.target.value)}
+                    placeholder="€"
+                  />
+                  {lineas.length > 2 ? (
+                    <button type="button" onClick={() => setLineas(lineas.filter((_, j) => j !== i))} style={{ border: "none", background: "none", cursor: "pointer", color: theme.danger }}><X size={14} /></button>
+                  ) : <span />}
+                </div>
+              );
+            })}
+            <button type="button" onClick={() => setLineas([...lineas.slice(0, -1), { destino: "club", category: "", amount: "" }, lineas[lineas.length - 1]])} style={{ border: `1px dashed ${theme.border}`, background: "transparent", borderRadius: 8, padding: "4px 10px", fontSize: 12.5, cursor: "pointer", color: theme.pine }}>
+              + Añadir línea
+            </button>
+            {resto <= 0 && totalTicket > 0 && <div style={{ color: theme.danger, fontSize: 12.5, marginTop: 6 }}>Las líneas anteriores ya suman el total: baja algún importe.</div>}
+            {editando && <div style={{ color: theme.inkSoft, fontSize: 12, marginTop: 6 }}>La transacción actual se queda con la primera línea y se crean las demás; todas comparten el mismo archivo adjunto.</div>}
+          </div>
+        )}
+
         <button
           type="submit"
           className="rounded-md"
@@ -1625,7 +1742,7 @@ function TransaccionForm({ onClose, onSave, initial, categorias, destinoInicial 
             cursor: "pointer",
           }}
         >
-          Guardar transacción
+          {reparto ? "Guardar reparto" : editando ? "Guardar cambios" : "Guardar transacción"}
         </button>
       </form>
     </div>
@@ -1975,8 +2092,9 @@ function ImportarProveedoresModal({ onClose, tenantId, transacciones }) {
   );
 }
 
-function TransaccionesView({ transacciones, onAdd, categorias, tenantId, entidad, negocio, onCambiarDestino, onCambiarPago, onBorrar }) {
+function TransaccionesView({ transacciones, onAdd, onAddVarios, onActualizar, onActualizarVarios, categorias, tenantId, entidad, negocio, onCambiarDestino, onCambiarPago, onBorrar }) {
   const [showForm, setShowForm] = useState(false);
+  const [txEditando, setTxEditando] = useState(null);
   const [showScan, setShowScan] = useState(false);
   const [showImportar, setShowImportar] = useState(false);
   const [showProveedores, setShowProveedores] = useState(false);
@@ -2100,6 +2218,7 @@ function TransaccionesView({ transacciones, onAdd, categorias, tenantId, entidad
                 <td style={{ padding: "12px 16px", fontSize: 14 }}>{t.proveedor || <span style={{ color: theme.border }}>—</span>}</td>
                 <td style={{ padding: "12px 16px", fontSize: 14, color: theme.inkSoft }}>
                   {t.description || "—"}
+                  {t.grupo_ticket && <div style={{ fontSize: 11.5, color: theme.accent, marginTop: 2 }}>✂ Ticket compartido{t.importe_ticket ? ` (total ${fmtEUR(t.importe_ticket)})` : ""}</div>}
                 </td>
                 <td style={{ padding: "12px 16px" }}>
                   <Badge tone={t.type === "income" ? "income" : "expense"}>
@@ -2158,6 +2277,13 @@ function TransaccionesView({ transacciones, onAdd, categorias, tenantId, entidad
                   )}
                 </td>
                 <td style={{ padding: "12px 8px", fontSize: 13 }}>
+                  {!String(t.id).startsWith("academia-") && onActualizar && (
+                    <button
+                      onClick={() => { setTxEditando(t); setDatosDetectados(null); setShowForm(true); }}
+                      title="Editar o repartir esta transacción"
+                      style={{ border: "none", background: "transparent", cursor: "pointer", padding: 4, fontSize: 14 }}
+                    >✏️</button>
+                  )}
                   {!String(t.id).startsWith("academia-") && onBorrar && (
                     <button
                       onClick={() => onBorrar(t)}
@@ -2198,14 +2324,30 @@ function TransaccionesView({ transacciones, onAdd, categorias, tenantId, entidad
 
       {showForm && (
         <TransaccionForm
-          initial={datosDetectados}
+          initial={txEditando ? null : datosDetectados}
+          editando={txEditando}
           destinoInicial={entidad === "jmcf" ? (["proshop", "academia", "piso", "personal"].includes(negocio) ? negocio : "proshop") : "club"}
           categorias={categorias}
-          onClose={() => { setShowForm(false); setDatosDetectados(null); }}
+          onClose={() => { setShowForm(false); setDatosDetectados(null); setTxEditando(null); }}
           onSave={(data) => {
             onAdd(data);
             setShowForm(false);
             setDatosDetectados(null);
+          }}
+          onSaveVarios={(datas) => {
+            onAddVarios && onAddVarios(datas);
+            setShowForm(false);
+            setDatosDetectados(null);
+          }}
+          onUpdate={(id, data) => {
+            onActualizar && onActualizar(id, data);
+            setShowForm(false);
+            setTxEditando(null);
+          }}
+          onUpdateVarios={(id, datas) => {
+            onActualizarVarios && onActualizarVarios(txEditando, datas);
+            setShowForm(false);
+            setTxEditando(null);
           }}
         />
       )}
@@ -5351,17 +5493,50 @@ function App() {
     });
   };
 
+  const handleAddVarios = async (datas) => {
+    for (const d of datas) {
+      await addDoc(collection(db, `clubes/${tenantId}/finanzas_transacciones`), { ...d, entidad: d.entidad || entidad, created_at: serverTimestamp() });
+    }
+  };
+
+  const handleActualizarTransaccion = async (id, data) => {
+    try {
+      await updateDoc(doc(db, `clubes/${tenantId}/finanzas_transacciones`, id), { ...data, editado_en: Date.now() });
+    } catch (e) {
+      window.alert("No se ha podido guardar el cambio: " + (e?.message || e));
+    }
+  };
+
+  // Reparte un ticket: la transacción original se queda con la primera línea y se crean las demás, con el mismo archivo.
+  const handleActualizarVarios = async (tx, datas) => {
+    try {
+      await updateDoc(doc(db, `clubes/${tenantId}/finanzas_transacciones`, tx.id), { ...datas[0], editado_en: Date.now() });
+      for (const d of datas.slice(1)) {
+        await addDoc(collection(db, `clubes/${tenantId}/finanzas_transacciones`), {
+          ...d,
+          ticket_path: tx.ticket_path || null,
+          ticket_nombre: tx.ticket_nombre || null,
+          entidad: d.entidad || entidad,
+          created_at: serverTimestamp(),
+        });
+      }
+    } catch (e) {
+      window.alert("No se ha podido repartir el ticket: " + (e?.message || e));
+    }
+  };
+
   // Borra una transacción (y, si tiene, intenta borrar también su archivo). Pide confirmación.
   const handleBorrarTransaccion = async (t) => {
     const nombre = t.description || t.proveedor || t.category || "esta transacción";
-    if (!window.confirm(`¿Borrar «${nombre}» (${fmtEUR(t.amount)})?\n\nEsta acción no se puede deshacer.${t.ticket_path ? "\nTambién se borrará su archivo adjunto." : ""}`)) return;
+    const archivoCompartido = !!t.ticket_path && todasTransacciones.some((x) => x.id !== t.id && x.ticket_path === t.ticket_path);
+    if (!window.confirm(`¿Borrar «${nombre}» (${fmtEUR(t.amount)})?\n\nEsta acción no se puede deshacer.${t.ticket_path ? (archivoCompartido ? "\nEl archivo adjunto se conserva porque lo usan otras líneas del mismo ticket." : "\nTambién se borrará su archivo adjunto.") : ""}`)) return;
     try {
       await deleteDoc(doc(db, `clubes/${tenantId}/finanzas_transacciones`, t.id));
     } catch (e) {
       window.alert("No se ha podido borrar: " + (e?.message || e));
       return;
     }
-    if (t.ticket_path) {
+    if (t.ticket_path && !archivoCompartido) {
       try { await deleteObject(ref(storage, t.ticket_path)); } catch (e) { console.warn("No se pudo borrar el archivo adjunto:", e); }
     }
   };
@@ -5475,7 +5650,7 @@ function App() {
           />
         )}
         {active === "transacciones" && (
-          <TransaccionesView transacciones={transaccionesVista} onAdd={handleAddTransaccion} categorias={categorias || CATEGORIAS_DEFECTO} tenantId={tenantId} entidad={entidad} negocio={negocioActivo} onCambiarDestino={handleCambiarDestino} onCambiarPago={handleCambiarPago} onBorrar={handleBorrarTransaccion} />
+          <TransaccionesView transacciones={transaccionesVista} onAdd={handleAddTransaccion} onAddVarios={handleAddVarios} onActualizar={handleActualizarTransaccion} onActualizarVarios={handleActualizarVarios} categorias={categorias || CATEGORIAS_DEFECTO} tenantId={tenantId} entidad={entidad} negocio={negocioActivo} onCambiarDestino={handleCambiarDestino} onCambiarPago={handleCambiarPago} onBorrar={handleBorrarTransaccion} />
         )}
         {active === "informes" && (
           <InformesView transacciones={transaccionesVista} ventasProshop={ventasProshopVista} />
