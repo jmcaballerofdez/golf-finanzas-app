@@ -2672,14 +2672,777 @@ async function exportarInformePDF({ desde, hasta, desgloseIngresos, desgloseGast
   doc.save(`informe_finanzas_${fmtDate(desde).replace(/ /g, "-")}_${fmtDate(hasta).replace(/ /g, "-")}.pdf`);
 }
 
-function InformesView({ transacciones, ventasProshop }) {
+/* ============================ INFORME PARA LA JUNTA DIRECTIVA ============================ */
+// PDF de aspecto editorial (memoria anual) y Excel de datos, para cualquier rango de fechas,
+// segmentado por mes / trimestre / semestre / año y comparable con el año anterior o el periodo anterior.
+// Mezcla las transacciones del club con las ventas del TPV (ventas_gcr) sin contar dos veces:
+// donde el TPV tiene ventas, no se cuentan las "Ventas Campo" escritas a mano en Transacciones.
+
+const JT_MES = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
+const JT_MES_LARGO = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
+const JT_FAMILIAS_TPV = ["ventas campo", "cuotas", "academia", "varios club"];
+const JT_FAMILIAS_TPV_NOMBRES = ["Cuotas", "Ventas campo", "Academia", "Varios club"];
+// Paleta del informe: papel, tinta, verde de calle, salvia, arena de búnker y arcilla (banderín).
+const JT_C = {
+  papel: [250, 247, 240], tinta: [28, 33, 30], bosque: [27, 61, 46], medio: [74, 112, 88], salvia: [166, 187, 163],
+  suave: [222, 230, 215], arena: [212, 192, 150], arcilla: [160, 66, 48], gris: [112, 118, 112], regla: [203, 198, 184],
+};
+const JT_TONOS = [JT_C.bosque, JT_C.medio, JT_C.salvia, JT_C.arena, [186, 130, 96], JT_C.gris, [140, 160, 150], [226, 214, 186]];
+
+const jtIso = (d) => {
+  const x = d instanceof Date ? d : new Date(d);
+  return isNaN(x) ? "" : `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")}`;
+};
+const jtR = (x) => Math.round((Number(x) || 0) * 100) / 100;
+const jtNum = (n) => new Intl.NumberFormat("es-ES", { minimumFractionDigits: 2, maximumFractionDigits: 2, useGrouping: "always" }).format(jtR(n)).replace(/ /g, " ");
+const jtEur = (n) => `${jtNum(n)} €`;
+const jtEur0 = (n) => `${new Intl.NumberFormat("es-ES", { maximumFractionDigits: 0, useGrouping: "always" }).format(Math.round(Number(n) || 0)).replace(/ /g, " ")} €`;
+const jtK = (v) => (Math.abs(v) >= 1000 ? `${(v / 1000).toLocaleString("es-ES", { maximumFractionDigits: 1 })}k` : String(Math.round(v)));
+const jtPct = (a, b) => (b > 0 ? ((a - b) / b) * 100 : null);
+const jtPctTxt = (p) => (p == null ? "—" : `${p > 0 ? "+" : ""}${p.toFixed(1).replace(".", ",")} %`);
+const jtP1 = (v) => `${v.toFixed(1).replace(".", ",")} %`;
+const jtFechaLarga = (iso) => `${Number(iso.slice(8, 10))} de ${JT_MES_LARGO[Number(iso.slice(5, 7)) - 1]} de ${iso.slice(0, 4)}`;
+const jtFechaCorta = (iso) => `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}`;
+const jtCap = (s) => { const t = String(s || "").trim(); return t ? t.charAt(0).toUpperCase() + t.slice(1).toLowerCase() : t; };
+const jtCatIng = (c) => (JT_FAMILIAS_TPV.includes(normTx(c).trim()) ? jtCap(c) : String(c || "Sin categoría"));
+const jtNice = (v) => {
+  if (v <= 0) return 1;
+  const e = Math.pow(10, Math.floor(Math.log10(v)));
+  const f = v / e;
+  return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10) * e;
+};
+
+const JT_SEGMENTOS = [["total", "Sin segmentar"], ["mes", "Por meses"], ["trimestre", "Por trimestres"], ["semestre", "Por semestres"], ["anio", "Por años"]];
+const JT_COMPARAR = [["anioant", "Mismo periodo del año anterior"], ["anterior", "Periodo inmediatamente anterior"], ["ninguno", "Sin comparar"]];
+
+// Trocea [dI, hI] en tramos naturales (meses, trimestres, semestres o años), recortando los extremos.
+function jtSegmentos(dI, hI, modo) {
+  const out = [];
+  const paso = { mes: 1, trimestre: 3, semestre: 6, anio: 12 }[modo] || 1;
+  let y = Number(dI.slice(0, 4)), m = Number(dI.slice(5, 7)) - 1;
+  m = Math.floor(m / paso) * paso;
+  for (let n = 0; n < 400; n++) {
+    const ini = `${y}-${String(m + 1).padStart(2, "0")}-01`;
+    const fin = vgFinMes(y, m + paso);
+    if (ini > hI) break;
+    const from = ini < dI ? dI : ini, to = fin > hI ? hI : fin;
+    const yy = String(y).slice(2);
+    const etiqueta = modo === "mes" ? `${JT_MES[m]} ${yy}` : modo === "trimestre" ? `T${m / 3 + 1} ${yy}` : modo === "semestre" ? `S${m / 6 + 1} ${yy}` : String(y);
+    out.push({ from, to, label: etiqueta, parcial: from !== ini || to !== fin });
+    m += paso;
+    while (m > 11) { m -= 12; y += 1; }
+  }
+  return out;
+}
+
+// Lee de Firestore los meses de ventas del TPV que hacen falta (el periodo y su comparación).
+async function jtCargarVentas(tenantId, col, desde, hasta, comparar) {
+  const ids = new Set();
+  const dI = jtIso(desde), hI = jtIso(hasta);
+  let a = dI;
+  if (comparar === "anioant") a = vgAnioAnt(dI);
+  else if (comparar === "anterior") a = vgAdd(dI, -(vgDiasEntre(dI, hI) + 1));
+  for (let y = Number(a.slice(0, 4)), m = Number(a.slice(5, 7)); y < Number(hI.slice(0, 4)) || (y === Number(hI.slice(0, 4)) && m <= Number(hI.slice(5, 7))); ) {
+    ids.add(`${y}-${String(m).padStart(2, "0")}`);
+    m += 1; if (m > 12) { m = 1; y += 1; }
+    if (ids.size > 120) break;
+  }
+  const trozos = await Promise.all([...ids].map(async (id) => {
+    try {
+      const s = await getDoc(doc(db, `clubes/${tenantId}/${col}`, id));
+      return s.exists() ? s.data().lineas || [] : [];
+    } catch (e) { return []; }
+  }));
+  return trozos.flat();
+}
+
+function jtConstruir({ transacciones, ventas, desde, hasta, params }) {
+  const P = { segmento: "total", comparar: "anioant", filtroIng: null, filtroGas: null, topProv: 15, ...(params || {}) };
+  const dI = jtIso(desde), hI = jtIso(hasta);
+  const nDias = vgDiasEntre(dI, hI) + 1;
+  const desplazar = (iso) => (P.comparar === "anioant" ? vgAnioAnt(iso) : P.comparar === "anterior" ? vgAdd(iso, -nDias) : iso);
+  const comp = P.comparar !== "ninguno";
+  const dA = desplazar(dI), hA = desplazar(hI);
+  const finMes = (ym) => vgFinMes(Number(ym.slice(0, 4)), Number(ym.slice(5, 7)));
+  const cob = {};
+  ventas.forEach((l) => {
+    const ym = l.d.slice(0, 7);
+    const f = l.m ? finMes(ym) : l.d;
+    if (!cob[ym] || f > cob[ym]) cob[ym] = f;
+  });
+  const catIng = jtCatIng;
+  const dentro = (f, a, b) => (f.mm ? f.d >= a && finMes(f.ym) <= b : f.d >= a && f.d <= b);
+  const mensualesFuera = new Set();
+
+  const filas = [];
+  const meter = (f) => {
+    if (f.tipo === "ingreso" && P.filtroIng && !P.filtroIng.has(f.cat)) return;
+    if (f.tipo === "gasto" && P.filtroGas && !P.filtroGas.has(f.cat)) return;
+    f.ea = dentro(f, dI, hI);
+    f.eb = comp && dentro(f, dA, hA);
+    if (!f.ea && !f.eb) {
+      if (f.mm && ((finMes(f.ym) >= dI && f.d <= hI) || (comp && finMes(f.ym) >= dA && f.d <= hA))) mensualesFuera.add(f.ym);
+      return;
+    }
+    filas.push(f);
+  };
+  transacciones.forEach((t) => {
+    const d = jtIso(aFecha(t.date));
+    if (!d) return;
+    const esIng = t.type === "income";
+    if (esIng && normTx(t.category).trim() === "ventas campo" && cob[d.slice(0, 7)] && d <= cob[d.slice(0, 7)]) return; // ya está en el TPV
+    meter({
+      d, ym: d.slice(0, 7), tipo: esIng ? "ingreso" : "gasto", fuente: "Transacciones", mm: false,
+      cat: esIng ? catIng(t.category) : String(t.category || "Sin categoría"), sub: t.subcategory || "", prov: t.proveedor || "",
+      desc: t.description || "", imp: Number(t.amount || 0), cuenta: t.cuenta || "", factura: t.num_factura || "", cant: null,
+    });
+  });
+  ventas.forEach((l) => {
+    meter({
+      d: l.d, ym: l.d.slice(0, 7), tipo: "ingreso", fuente: "TPV", mm: !!l.m, cat: catIng(l.f), sub: l.s || "", prov: "", desc: l.p || "",
+      imp: Number(l.t || 0), cuenta: "", factura: "", cant: Number(l.c || 0),
+    });
+  });
+
+  const suma = (arr, tipo, ea) => jtR(arr.filter((f) => f.tipo === tipo && (ea ? f.ea : f.eb)).reduce((s, f) => s + f.imp, 0));
+  const tot = { ing: suma(filas, "ingreso", true), gas: suma(filas, "gasto", true), ingA: suma(filas, "ingreso", false), gasA: suma(filas, "gasto", false) };
+  tot.res = jtR(tot.ing - tot.gas);
+  tot.resA = jtR(tot.ingA - tot.gasA);
+  tot.margen = tot.ing > 0 ? (tot.res / tot.ing) * 100 : null;
+  const hayAnt = comp && tot.ingA > 0, hayAntGas = comp && tot.gasA > 0;
+  const cmpLabel = !comp ? "" : P.comparar === "anioant" ? "año anterior" : "periodo anterior";
+
+  const agrupar = (tipo, clave, filtro) => {
+    const m = new Map();
+    filas.forEach((f) => {
+      if (f.tipo !== tipo || (filtro && !filtro(f))) return;
+      const k = clave(f);
+      if (!k) return;
+      const x = m.get(k) || { k, a: 0, b: 0, n: 0, c: 0 };
+      if (f.ea) { x.a += f.imp; x.n += 1; x.c += f.cant || 0; }
+      if (f.eb) x.b += f.imp;
+      m.set(k, x);
+    });
+    return [...m.values()].map((x) => ({ ...x, a: jtR(x.a), b: jtR(x.b), c: jtR(x.c) })).sort((p, q) => q.a - p.a || q.b - p.b);
+  };
+  const esTPV = (f) => f.fuente === "TPV";
+  const catsIng = agrupar("ingreso", (f) => f.cat).filter((x) => x.a !== 0 || x.b !== 0);
+  const catsGas = agrupar("gasto", (f) => f.cat).filter((x) => x.a !== 0 || x.b !== 0);
+  const proveedores = agrupar("gasto", (f) => f.prov).filter((x) => x.a > 0);
+  const ventasFam = agrupar("ingreso", (f) => f.cat, esTPV);
+  const ventasSub = agrupar("ingreso", (f) => `${f.cat} · ${f.sub}`, esTPV);
+  const productos = agrupar("ingreso", (f) => f.desc, esTPV);
+  const hayTPV = filas.some((f) => f.ea && esTPV(f));
+
+  // Tramos (para el gráfico y para la tabla segmentada)
+  const mesesTotales = Math.round(nDias / 30.4);
+  const tramosGraf = jtSegmentos(dI, hI, mesesTotales > 30 ? "trimestre" : "mes");
+  const porTramo = (segs) => segs.map((s) => {
+    const sa = desplazar(s.from), sb = desplazar(s.to);
+    const r = { ...s, ing: 0, gas: 0, tpv: 0, ingA: 0, gasA: 0, tpvA: 0, cats: {}, catsG: {} };
+    filas.forEach((f) => {
+      const enA = f.ea && dentro(f, s.from, s.to);
+      const enB = comp && f.eb && dentro(f, sa, sb);
+      if (!enA && !enB) return;
+      if (f.tipo === "ingreso") {
+        if (enA) { r.ing += f.imp; if (esTPV(f)) r.tpv += f.imp; r.cats[f.cat] = (r.cats[f.cat] || 0) + f.imp; }
+        if (enB) { r.ingA += f.imp; if (esTPV(f)) r.tpvA += f.imp; }
+      } else {
+        if (enA) { r.gas += f.imp; r.catsG[f.cat] = (r.catsG[f.cat] || 0) + f.imp; }
+        if (enB) r.gasA += f.imp;
+      }
+    });
+    ["ing", "gas", "tpv", "ingA", "gasA", "tpvA"].forEach((k) => { r[k] = jtR(r[k]); });
+    r.res = jtR(r.ing - r.gas);
+    return r;
+  });
+  const mensual = porTramo(tramosGraf);
+  const tramos = P.segmento === "total" ? [] : porTramo(jtSegmentos(dI, hI, P.segmento));
+
+  // Notas automáticas sobre la calidad de los datos
+  const notas = [];
+  const hoyIso = jtIso(new Date());
+  const mesesCompletos = jtSegmentos(dI, hI, "mes").filter((s) => s.to < hoyIso && !s.parcial);
+  const mesesDatos = porTramo(mesesCompletos);
+  const sinGasto = mesesDatos.filter((x) => x.gas === 0).map((x) => x.label);
+  if (mesesDatos.some((x) => x.gas > 0) && sinGasto.length) notas.push(`No hay gastos registrados en: ${sinGasto.join(", ")}. Si hubo gasto esos meses, el resultado está sobrestimado.`);
+  if (comp && !hayAntGas && tot.gas > 0) notas.push(`No hay gastos del ${cmpLabel} cargados en la aplicación, así que no se comparan los gastos ni el resultado.`);
+  if (mensualesFuera.size) notas.push(`Hay ventas del TPV que solo existen como total mensual (${[...mensualesFuera].sort().join(", ")}); solo se incluyen cuando el tramo abarca el mes entero.`);
+  if (!hayTPV) notas.push("No hay ventas del TPV cargadas en este periodo: los ingresos son solo los registrados en Transacciones.");
+  if (P.filtroIng) notas.push(`Informe filtrado. Ingresos incluidos: ${[...P.filtroIng].join(", ") || "ninguno"}.`);
+  if (P.filtroGas) notas.push(`Informe filtrado. Gastos incluidos: ${[...P.filtroGas].join(", ") || "ninguno"}.`);
+  if (tramos.some((t) => t.parcial)) notas.push("Los tramos de los extremos son parciales: empiezan o acaban dentro del periodo elegido.");
+
+  return {
+    P, dI, hI, dA, hA, comp, cmpLabel, tot, hayAnt, hayAntGas, hayTPV, catsIng, catsGas, proveedores, ventasFam, ventasSub, productos,
+    mensual, tramos, notas, filas, nTx: filas.filter((f) => f.ea && f.fuente === "Transacciones").length, nTPV: filas.filter((f) => f.ea && esTPV(f)).length,
+  };
+}
+
+/* ------------------------------ PDF (diseño editorial) ------------------------------ */
+const jtColor = (doc, c) => { doc.setTextColor(c[0], c[1], c[2]); };
+const jtRelleno = (doc, c) => { doc.setFillColor(c[0], c[1], c[2]); };
+const jtTrazo = (doc, c, g) => { doc.setDrawColor(c[0], c[1], c[2]); doc.setLineWidth(g == null ? 0.5 : g); };
+
+// Curvas de nivel de un campo de golf (decorado de la portada)
+function jtCurvas(doc, cx, cy, n, escala) {
+  for (let k = 1; k <= n; k++) {
+    const r = k * escala, ph = k * 0.55;
+    const pts = [];
+    for (let i = 0; i <= 120; i++) {
+      const a = (i / 120) * Math.PI * 2;
+      const rho = r * (1 + 0.13 * Math.sin(3 * a + ph) + 0.07 * Math.sin(5 * a + 2 * ph) + 0.035 * Math.sin(8 * a - ph));
+      pts.push([cx + rho * Math.cos(a) * 1.25, cy + rho * Math.sin(a)]);
+    }
+    const v = [];
+    for (let i = 1; i < pts.length; i++) v.push([pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]]);
+    jtTrazo(doc, k % 4 === 0 ? JT_C.salvia : JT_C.suave, k % 4 === 0 ? 0.9 : 0.55);
+    doc.lines(v, pts[0][0], pts[0][1], [1, 1], "S", true);
+  }
+}
+
+// Gráfico de columnas: ingresos (verde), gastos (arena) y marca de comparación (arcilla). Sin leyenda recargada.
+function jtGrafico(doc, x, y, w, h, tramos, opciones) {
+  const { claveA, claveB, claveComp, colA, colB, colComp, resaltarMax } = opciones;
+  const vals = tramos.flatMap((t) => [t[claveA] || 0, claveB ? t[claveB] || 0 : 0, claveComp ? t[claveComp] || 0 : 0]);
+  const max = jtNice(Math.max(1, ...vals));
+  const izq = 38, abajo = 20;
+  const px = x + izq, pw = w - izq, py = y, ph = h - abajo;
+  doc.setFont("helvetica", "normal"); doc.setFontSize(7.5);
+  for (let i = 0; i <= 3; i++) {
+    const yy = py + ph - (ph * i) / 3;
+    jtTrazo(doc, JT_C.regla, 0.4);
+    if (i === 0) doc.line(px, yy, px + pw, yy);
+    else { doc.setLineDashPattern([1, 2.5], 0); doc.line(px, yy, px + pw, yy); doc.setLineDashPattern([], 0); }
+    jtColor(doc, JT_C.gris); doc.text(jtK((max * i) / 3), px - 7, yy + 2.5, { align: "right" });
+  }
+  const n = Math.max(1, tramos.length), gw = pw / n;
+  const nb = claveB ? 2 : 1, bw = Math.min(22, (gw * 0.72) / nb);
+  let iMax = -1;
+  if (resaltarMax) tramos.forEach((t, i) => { if (iMax < 0 || (t[claveA] || 0) > (tramos[iMax][claveA] || 0)) iMax = i; });
+  tramos.forEach((t, i) => {
+    const cx = px + gw * i + gw / 2, x0 = cx - (bw * nb) / 2;
+    const dibujar = (clave, col, j) => {
+      const v = t[clave] || 0, bh = (ph * Math.max(v, 0)) / max;
+      jtRelleno(doc, col);
+      if (bh > 0) doc.rect(x0 + bw * j, py + ph - bh, bw - 1.5, bh, "F");
+      return { v, bh };
+    };
+    const a = dibujar(claveA, i === iMax ? JT_C.bosque : JT_C.medio, 0);
+    if (claveB) dibujar(claveB, colB, 1);
+    let yc = null;
+    if (claveComp && (t[claveComp] || 0) > 0) {
+      yc = py + ph - (ph * t[claveComp]) / max;
+      jtTrazo(doc, colComp, 1.8);
+      doc.line(cx - (bw * nb) / 2 - 3, yc, cx + (bw * nb) / 2 + 3, yc);
+    }
+    if (n <= 12 && a.v > 0) {
+      const yTop = Math.min(py + ph - a.bh, yc == null ? 1e9 : yc) - 4.5;
+      doc.setFontSize(7); jtColor(doc, i === iMax ? JT_C.bosque : JT_C.gris); doc.setFont("helvetica", i === iMax ? "bold" : "normal");
+      doc.text(jtK(a.v), x0 + (bw - 1.5) / 2, yTop, { align: "center" });
+    }
+    doc.setFont("helvetica", "normal"); doc.setFontSize(7.5); jtColor(doc, JT_C.gris);
+    if (n <= 16 || i % 2 === 0) doc.text(t.label, cx, py + ph + 13, { align: "center" });
+  });
+}
+
+function jtLeyenda(doc, x, y, items) {
+  let cx = x;
+  doc.setFont("helvetica", "normal"); doc.setFontSize(8);
+  items.forEach((it) => {
+    if (it.marca) { jtTrazo(doc, it.color, 1.8); doc.line(cx, y - 3, cx + 11, y - 3); }
+    else { jtRelleno(doc, it.color); doc.rect(cx, y - 7, 8, 8, "F"); }
+    jtColor(doc, JT_C.gris); doc.text(it.nombre, cx + 15, y);
+    cx += 15 + doc.getTextWidth(it.nombre) + 16;
+  });
+}
+
+// Una sola banda con la composición del total, en tonos de verde y arena
+function jtBanda(doc, x, y, w, items, total) {
+  let cx = x;
+  items.forEach((it, i) => {
+    const ww = total > 0 ? (w * Math.max(it.a, 0)) / total : 0;
+    jtRelleno(doc, JT_TONOS[i % JT_TONOS.length]);
+    if (ww > 0.3) doc.rect(cx, y, Math.max(ww - 0.8, 0.3), 8, "F");
+    cx += ww;
+  });
+}
+
+async function jtPDF(D, sec, meta) {
+  const { jsPDF } = await import("jspdf");
+  const autoTable = (await import("jspdf-autotable")).default;
+  const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
+  const W = doc.internal.pageSize.getWidth(), H = doc.internal.pageSize.getHeight();
+  const M = 50, xc = M + 214, wc = W - M - xc; // columna de contenido a la derecha del margen editorial
+  const tituloInforme = meta.titulo || "Informe para la Junta Directiva";
+  const periodo = `${jtFechaLarga(D.dI)} al ${jtFechaLarga(D.hI)}`;
+  const periodoCorto = `${jtFechaCorta(D.dI)} – ${jtFechaCorta(D.hI)}`;
+  const comp = D.hayAnt;
+  const secciones = []; // para la numeración y el índice
+
+  const papel = () => { jtRelleno(doc, JT_C.papel); doc.rect(0, 0, W, H, "F"); };
+
+  // ---------- Portada ----------
+  papel();
+  jtCurvas(doc, W * 0.82, H * 0.54, 13, 17.5);
+  // banderín en el hoyo
+  jtTrazo(doc, JT_C.tinta, 1.1); doc.line(W * 0.82, H * 0.54 + 2, W * 0.82, H * 0.54 - 58);
+  jtRelleno(doc, JT_C.arcilla); doc.triangle(W * 0.82, H * 0.54 - 58, W * 0.82 + 30, H * 0.54 - 48, W * 0.82, H * 0.54 - 38, "F");
+  jtRelleno(doc, JT_C.tinta); doc.circle(W * 0.82, H * 0.54 + 2.5, 2.6, "F");
+  jtColor(doc, JT_C.bosque); doc.setFont("helvetica", "bold"); doc.setFontSize(9);
+  doc.text(meta.club.toUpperCase(), M, 74);
+  jtTrazo(doc, JT_C.tinta, 0.8); doc.line(M, 84, M + 36, 84);
+  doc.setFont("times", "bold"); doc.setFontSize(46); jtColor(doc, JT_C.tinta);
+  const tl = doc.splitTextToSize(tituloInforme, 470);
+  doc.text(tl, M, 206);
+  const yT = 206 + tl.length * 50;
+  doc.setFont("times", "italic"); doc.setFontSize(17); jtColor(doc, JT_C.bosque);
+  doc.text(periodo, M, yT + 6);
+  if (D.hayAnt) { doc.setFont("helvetica", "normal"); doc.setFontSize(9.5); jtColor(doc, JT_C.gris); doc.text(`Comparado con ${jtFechaCorta(D.dA)} – ${jtFechaCorta(D.hA)}`, M, yT + 28); }
+  doc.setFont("helvetica", "normal"); doc.setFontSize(9); jtColor(doc, JT_C.gris);
+  doc.text(`Emitido el ${jtFechaLarga(jtIso(new Date()))}`, M, H - 62);
+  doc.text("Documento de gestión interna · Cifras de gestión, no contabilidad oficial", M, H - 48);
+
+  // ---------- Estructura de página editorial ----------
+  const pagina = (numero, titulo, intro) => {
+    doc.addPage(); papel();
+    jtColor(doc, JT_C.salvia); doc.setFont("times", "italic"); doc.setFontSize(78);
+    doc.text(numero, M - 4, 168);
+    jtColor(doc, JT_C.tinta); doc.setFont("times", "bold"); doc.setFontSize(21);
+    const tl2 = doc.splitTextToSize(titulo, 176);
+    doc.text(tl2, M, 206);
+    let yy = 206 + tl2.length * 24 + 4;
+    jtTrazo(doc, JT_C.tinta, 0.8); doc.line(M, yy, M + 28, yy);
+    if (intro) { doc.setFont("times", "italic"); doc.setFontSize(10.5); jtColor(doc, JT_C.gris); doc.text(doc.splitTextToSize(intro, 168), M, yy + 20); }
+    return 96; // y inicial del contenido
+  };
+
+  // Cifra grande con rótulo y variación (sin cajas ni franjas de color)
+  const cifra = (x, y, rotulo, valor, sub, colorSub, colorValor) => {
+    doc.setFont("helvetica", "bold"); doc.setFontSize(7.5); jtColor(doc, JT_C.gris); doc.text(rotulo, x, y);
+    doc.setFont("times", "bold"); doc.setFontSize(27); jtColor(doc, colorValor || JT_C.tinta); doc.text(valor, x, y + 30);
+    if (sub) { doc.setFont("helvetica", "normal"); doc.setFontSize(8.5); jtColor(doc, colorSub || JT_C.gris); doc.text(sub, x, y + 46); }
+  };
+  const colVar = (v, invertir) => (v == null ? JT_C.gris : (invertir ? v <= 0 : v >= 0) ? JT_C.bosque : JT_C.arcilla);
+  const txtVar = (v, hay) => (!hay || v == null ? "sin comparación" : `${jtPctTxt(v)} vs ${D.cmpLabel}`);
+
+  const tablaBase = {
+    theme: "plain",
+    styles: { font: "helvetica", fontSize: 8.5, cellPadding: { top: 4.2, bottom: 4.2, left: 4, right: 4 }, textColor: JT_C.tinta, lineColor: JT_C.regla, lineWidth: 0 },
+    headStyles: { fillColor: false, textColor: JT_C.gris, fontStyle: "bold", fontSize: 7.5, lineWidth: 0 },
+    margin: { left: xc, right: M },
+  };
+  // Regla fina bajo cada fila y doble regla bajo la cabecera, como en un libro de cuentas
+  const reglas = (d) => {
+    if (d.section === "head" && d.column.index === 0) { /* se dibuja en didDrawPage */ }
+  };
+  const ganchoLibro = {
+    didDrawCell: (d) => {
+      const c = d.cell;
+      if (d.section === "head") { jtTrazo(doc, JT_C.tinta, 0.9); doc.line(c.x, c.y + c.height, c.x + c.width, c.y + c.height); }
+      else { jtTrazo(doc, JT_C.regla, 0.4); doc.line(c.x, c.y + c.height, c.x + c.width, c.y + c.height); }
+    },
+  };
+  const cabDer = (d) => { if (d.section === "head" && d.column.index > 0) d.cell.styles.halign = "right"; };
+  const colorear = (d, cols, invertir) => {
+    cabDer(d);
+    if (d.section === "body" && cols.includes(d.column.index)) {
+      const t = String(d.cell.raw);
+      const pos = t.startsWith("+"), neg = t.startsWith("-");
+      if (pos) d.cell.styles.textColor = invertir ? JT_C.arcilla : JT_C.bosque;
+      else if (neg) d.cell.styles.textColor = invertir ? JT_C.bosque : JT_C.arcilla;
+    }
+  };
+
+  let num = 0;
+  const sig = () => String(++num).padStart(2, "0");
+
+  // ---------- Carta del gerente (opcional) ----------
+  if (meta.comentario && meta.comentario.trim()) {
+    doc.addPage(); papel();
+    jtColor(doc, JT_C.salvia); doc.setFont("times", "italic"); doc.setFontSize(78); doc.text("“", M - 4, 168);
+    jtColor(doc, JT_C.tinta); doc.setFont("times", "bold"); doc.setFontSize(21); doc.text("Unas palabras", M, 206);
+    jtTrazo(doc, JT_C.tinta, 0.8); doc.line(M, 218, M + 28, 218);
+    doc.setFont("times", "normal"); doc.setFontSize(13.5); jtColor(doc, JT_C.tinta);
+    const parrafos = meta.comentario.trim().split(/\n+/);
+    let yy = 110;
+    parrafos.forEach((p2) => {
+      const ls = doc.splitTextToSize(p2, wc);
+      doc.text(ls, xc, yy, { lineHeightFactor: 1.45 });
+      yy += ls.length * 13.5 * 1.45 + 10;
+    });
+    yy += 16;
+    jtTrazo(doc, JT_C.tinta, 0.6); doc.line(xc, yy, xc + 150, yy);
+    doc.setFont("times", "italic"); doc.setFontSize(11); jtColor(doc, JT_C.gris);
+    doc.text(meta.firma || "El Director-Gerente", xc, yy + 15);
+  }
+
+  // ---------- Resumen ----------
+  {
+    const y0 = pagina(sig(), "Lo esencial del periodo", D.catsIng[0] ? `${D.catsIng[0].k} aporta el ${D.tot.ing > 0 ? ((D.catsIng[0].a / D.tot.ing) * 100).toFixed(0) : 0} % de los ingresos.` : "");
+    const wK = wc / 4;
+    const vIng = jtPct(D.tot.ing, D.tot.ingA), vGas = D.hayAntGas ? jtPct(D.tot.gas, D.tot.gasA) : null;
+    const vRes = D.hayAnt && D.hayAntGas ? jtPct(D.tot.res, D.tot.resA) : null;
+    const k = [
+      ["INGRESOS", jtEur0(D.tot.ing), txtVar(vIng, D.hayAnt), colVar(vIng, false), null],
+      ["GASTOS", jtEur0(D.tot.gas), txtVar(vGas, D.hayAntGas), colVar(vGas, true), null],
+      ["RESULTADO", jtEur0(D.tot.res), txtVar(vRes, D.hayAnt && D.hayAntGas), colVar(vRes, false), D.tot.res < 0 ? JT_C.arcilla : JT_C.bosque],
+      ["MARGEN", D.tot.margen == null ? "—" : jtP1(D.tot.margen), D.tot.res >= 0 ? "superávit" : "déficit", JT_C.gris, null],
+    ];
+    k.forEach((c, i) => {
+      const x = xc + i * wK + (i ? 14 : 0);
+      if (i) { jtTrazo(doc, JT_C.regla, 0.6); doc.line(xc + i * wK, y0 - 4, xc + i * wK, y0 + 54); }
+      cifra(x, y0 + 8, c[0], c[1], c[2], c[3], c[4]);
+    });
+    const yG = y0 + 96;
+    doc.setFont("helvetica", "bold"); doc.setFontSize(7.5); jtColor(doc, JT_C.gris); doc.text(D.tramos.length ? "EVOLUCIÓN POR TRAMOS" : "EVOLUCIÓN MENSUAL", xc, yG);
+    jtLeyenda(doc, xc + wc - (comp ? 215 : 120), yG, [{ nombre: "Ingresos", color: JT_C.medio }, { nombre: "Gastos", color: JT_C.arena }, ...(comp ? [{ nombre: D.cmpLabel === "año anterior" ? "Ingresos año ant." : "Ingresos periodo ant.", color: JT_C.arcilla, marca: true }] : [])]);
+    jtGrafico(doc, xc, yG + 10, wc, 200, D.mensual, { claveA: "ing", claveB: "gas", claveComp: comp ? "ingA" : null, colB: JT_C.arena, colComp: JT_C.arcilla, resaltarMax: true });
+    // Tres observaciones, escritas como notas al margen
+    const con = D.mensual.filter((m) => m.ing > 0), cg = D.mensual.filter((m) => m.gas > 0);
+    const mejor = con.slice().sort((a, b) => b.ing - a.ing)[0], peor = cg.slice().sort((a, b) => b.gas - a.gas)[0];
+    const notasMargen = [];
+    if (mejor) notasMargen.push(["Mejor tramo en ingresos", `${mejor.label}, con ${jtEur0(mejor.ing)}.`]);
+    if (peor) notasMargen.push(["Mayor gasto", `${peor.label}, con ${jtEur0(peor.gas)}.`]);
+    if (D.catsGas[0]) notasMargen.push(["Primera partida de gasto", `${D.catsGas[0].k}: ${D.tot.gas > 0 ? ((D.catsGas[0].a / D.tot.gas) * 100).toFixed(0) : 0} % del total.`]);
+    const wN = wc / Math.max(1, notasMargen.length);
+    notasMargen.forEach((n, i) => {
+      const x = xc + i * wN;
+      jtTrazo(doc, JT_C.tinta, 0.6); doc.line(x, yG + 236, x + wN - 16, yG + 236);
+      doc.setFont("helvetica", "bold"); doc.setFontSize(7.5); jtColor(doc, JT_C.gris); doc.text(n[0].toUpperCase(), x, yG + 250);
+      doc.setFont("times", "italic"); doc.setFontSize(11); jtColor(doc, JT_C.tinta); doc.text(doc.splitTextToSize(n[1], wN - 20), x, yG + 266);
+    });
+  }
+
+  // ---------- Evolución por tramos ----------
+  if (D.tramos.length) {
+    const nombreSeg = { mes: "mes a mes", trimestre: "trimestre a trimestre", semestre: "semestre a semestre", anio: "año a año" }[D.P.segmento];
+    const trozos = [];
+    for (let i = 0; i < D.tramos.length; i += 8) trozos.push(D.tramos.slice(i, i + 8));
+    const topCat = (key, n) => {
+      const tot2 = {};
+      D.tramos.forEach((t) => Object.entries(t[key]).forEach(([c, v]) => { tot2[c] = (tot2[c] || 0) + v; }));
+      return Object.entries(tot2).sort((a, b) => b[1] - a[1]).slice(0, n).map((x) => x[0]);
+    };
+    const ci = topCat("cats", 5), cg2 = topCat("catsG", 6);
+    trozos.forEach((tr, idx) => {
+      const y0 = pagina(idx === 0 ? sig() : "", idx === 0 ? `El periodo ${nombreSeg}` : "El periodo (cont.)", idx === 0 ? "Cada columna es un tramo del periodo. El resultado es ingresos menos gastos del tramo." : "");
+      const cab = ["", ...tr.map((t) => t.label)];
+      const fila = (nombre, f, estilo) => [{ content: nombre, styles: estilo || {} }, ...tr.map((t) => ({ content: f(t), styles: estilo || {} }))];
+      const cuerpo = [
+        fila("Ingresos", (t) => jtEur0(t.ing), { fontStyle: "bold" }),
+        ...ci.map((c) => fila(`   ${c}`, (t) => (t.cats[c] ? jtEur0(t.cats[c]) : "—"), { textColor: JT_C.gris, fontSize: 7.8 })),
+        fila("Gastos", (t) => jtEur0(t.gas), { fontStyle: "bold" }),
+        ...cg2.map((c) => fila(`   ${c}`, (t) => (t.catsG[c] ? jtEur0(t.catsG[c]) : "—"), { textColor: JT_C.gris, fontSize: 7.8 })),
+        fila("Resultado", (t) => jtEur0(t.res), { fontStyle: "bold" }),
+        fila("Margen", (t) => (t.ing > 0 ? jtP1((t.res / t.ing) * 100) : "—"), { textColor: JT_C.gris }),
+      ];
+      if (comp) {
+        cuerpo.push(fila(`Ingresos vs ${D.cmpLabel}`, (t) => jtPctTxt(jtPct(t.ing, t.ingA)), { fontSize: 8 }));
+        if (D.hayAntGas) cuerpo.push(fila(`Gastos vs ${D.cmpLabel}`, (t) => jtPctTxt(jtPct(t.gas, t.gasA)), { fontSize: 8 }));
+      }
+      autoTable(doc, {
+        ...tablaBase, ...ganchoLibro, startY: y0, head: [cab], body: cuerpo,
+        columnStyles: { 0: { cellWidth: 130 }, ...Object.fromEntries(tr.map((_, i) => [i + 1, { halign: "right" }])) },
+        didParseCell: (d) => {
+          cabDer(d);
+          if (d.section === "body") {
+            const t = String(d.cell.raw && d.cell.raw.content != null ? d.cell.raw.content : d.cell.raw);
+            const nombre = String(d.row.raw[0].content);
+            if (d.column.index > 0 && nombre.startsWith("Resultado")) d.cell.styles.textColor = t.startsWith("-") ? JT_C.arcilla : JT_C.bosque;
+            if (d.column.index > 0 && / vs /.test(nombre)) { const inv = nombre.startsWith("Gastos"); if (t.startsWith("+")) d.cell.styles.textColor = inv ? JT_C.arcilla : JT_C.bosque; else if (t.startsWith("-")) d.cell.styles.textColor = inv ? JT_C.bosque : JT_C.arcilla; }
+          }
+        },
+      });
+    });
+  }
+
+  // ---------- Ingresos / Gastos ----------
+  const paginaCats = (titulo, intro, cats, total, hayAnt, invertir) => {
+    const y0 = pagina(sig(), titulo, intro);
+    if (!cats.length) { doc.setFont("times", "italic"); doc.setFontSize(12); jtColor(doc, JT_C.gris); doc.text("No hay datos en este periodo.", xc, y0 + 10); return; }
+    const top = cats.slice(0, 9), resto = cats.slice(9);
+    const items = resto.length ? [...top, { k: `Otras (${resto.length})`, a: jtR(resto.reduce((s, x) => s + x.a, 0)), b: jtR(resto.reduce((s, x) => s + x.b, 0)) }] : top;
+    jtBanda(doc, xc, y0, wc, items, total);
+    const maxV = Math.max(1, ...items.map((i) => i.a));
+    autoTable(doc, {
+      ...tablaBase, ...ganchoLibro, startY: y0 + 24,
+      head: [["", "IMPORTE", "% TOTAL", hayAnt ? "VS " + D.cmpLabel.toUpperCase() : "", ""]],
+      body: [...items.map((it) => [it.k, jtEur(it.a), total > 0 ? jtP1((it.a / total) * 100) : "—", hayAnt ? jtPctTxt(jtPct(it.a, it.b)) : "", ""]), ["Total", jtEur(total), "100 %", "", ""]],
+      columnStyles: { 0: { cellWidth: 150, fontStyle: "normal" }, 1: { halign: "right", cellWidth: 82 }, 2: { halign: "right", cellWidth: 52 }, 3: { halign: "right", cellWidth: 80 }, 4: { cellWidth: "auto" } },
+      didParseCell: (d) => {
+        colorear(d, [3], invertir);
+        if (d.section === "body" && d.row.index === items.length) { d.cell.styles.fontStyle = "bold"; }
+      },
+      didDrawCell: (d) => {
+        ganchoLibro.didDrawCell(d);
+        if (d.section === "body" && d.column.index === 4 && d.row.index < items.length) {
+          const it = items[d.row.index];
+          jtRelleno(doc, JT_TONOS[d.row.index % JT_TONOS.length]);
+          if (it.a > 0) doc.rect(d.cell.x + 8, d.cell.y + d.cell.height / 2 - 2.5, Math.max(1.5, ((d.cell.width - 8) * it.a) / maxV), 5, "F");
+        }
+      },
+    });
+  };
+  const fraseIng = D.catsIng.length > 1 ? `${D.catsIng[0].k} y ${D.catsIng[1].k.toLowerCase()} suman el ${D.tot.ing > 0 ? (((D.catsIng[0].a + D.catsIng[1].a) / D.tot.ing) * 100).toFixed(0) : 0} % de los ingresos.` : "De dónde vienen los ingresos del periodo.";
+  const fraseGas = D.catsGas.length > 1 ? `${D.catsGas[0].k} y ${D.catsGas[1].k.toLowerCase()} suponen el ${D.tot.gas > 0 ? (((D.catsGas[0].a + D.catsGas[1].a) / D.tot.gas) * 100).toFixed(0) : 0} % del gasto.` : "En qué se gasta el dinero del club.";
+  if (sec.ingresos) paginaCats("Ingresos", fraseIng, D.catsIng, D.tot.ing, D.hayAnt, false);
+  if (sec.gastos) paginaCats("Gastos", fraseGas, D.catsGas, D.tot.gas, D.hayAntGas, true);
+
+  // ---------- Proveedores ----------
+  if (sec.proveedores && D.proveedores.length) {
+    const top = D.proveedores.slice(0, D.P.topProv);
+    const y0 = pagina(sig(), "Proveedores", `Los ${top.length} proveedores con más gasto concentran el ${D.tot.gas > 0 ? ((top.reduce((s, p) => s + p.a, 0) / D.tot.gas) * 100).toFixed(0) : 0} % del total.`);
+    const maxP = Math.max(1, ...top.map((p) => p.a));
+    autoTable(doc, {
+      ...tablaBase, ...ganchoLibro, startY: y0,
+      head: [["", "FACT.", "IMPORTE", "% GASTO", ""]],
+      body: top.map((p, i) => [`${String(i + 1).padStart(2, "0")}  ${p.k}`, String(p.n), jtEur(p.a), D.tot.gas > 0 ? jtP1((p.a / D.tot.gas) * 100) : "—", ""]),
+      styles: { ...tablaBase.styles, fontSize: top.length > 15 ? 7.8 : 8.5, cellPadding: { top: top.length > 15 ? 3.3 : 4.2, bottom: top.length > 15 ? 3.3 : 4.2, left: 4, right: 4 } },
+      columnStyles: { 0: { cellWidth: 190 }, 1: { halign: "right", cellWidth: 36 }, 2: { halign: "right", cellWidth: 78 }, 3: { halign: "right", cellWidth: 54 }, 4: { cellWidth: "auto" } },
+      didParseCell: cabDer,
+      didDrawCell: (d) => {
+        ganchoLibro.didDrawCell(d);
+        if (d.section === "body" && d.column.index === 4) {
+          jtRelleno(doc, JT_C.medio);
+          doc.rect(d.cell.x + 8, d.cell.y + d.cell.height / 2 - 2.5, Math.max(1.5, ((d.cell.width - 8) * top[d.row.index].a) / maxP), 5, "F");
+        }
+      },
+    });
+  }
+
+  // ---------- Ventas del TPV ----------
+  if (sec.ventas && D.hayTPV) {
+    const totV = D.ventasFam.reduce((s, x) => s + x.a, 0), totVA = D.ventasFam.reduce((s, x) => s + x.b, 0);
+    const y0 = pagina(sig(), "Ventas del TPV", `Venta real del club: ${jtEur0(totV)} en el periodo${comp && totVA > 0 ? `, ${jtPctTxt(jtPct(totV, totVA))} frente al ${D.cmpLabel}` : ""}.`);
+    doc.setFont("helvetica", "bold"); doc.setFontSize(7.5); jtColor(doc, JT_C.gris); doc.text("VENTAS POR TRAMO", xc, y0);
+    jtLeyenda(doc, xc + wc - (totVA > 0 ? 190 : 80), y0, [{ nombre: "Ventas", color: JT_C.medio }, ...(totVA > 0 ? [{ nombre: `Mismo tramo ${D.cmpLabel}`, color: JT_C.arcilla, marca: true }] : [])]);
+    jtGrafico(doc, xc, y0 + 10, wc, 150, D.mensual, { claveA: "tpv", claveB: null, claveComp: totVA > 0 ? "tpvA" : null, colComp: JT_C.arcilla, resaltarMax: true });
+    autoTable(doc, {
+      ...tablaBase, ...ganchoLibro, startY: y0 + 184,
+      head: [["FAMILIA", "PERIODO", comp ? D.cmpLabel.toUpperCase() : "", "VARIACIÓN", "% VENTAS"]],
+      body: [...D.ventasFam.map((f) => [f.k, jtEur(f.a), f.b > 0 ? jtEur(f.b) : "—", jtPctTxt(jtPct(f.a, f.b)), totV > 0 ? jtP1((f.a / totV) * 100) : "—"]), ["Total", jtEur(totV), totVA > 0 ? jtEur(totVA) : "—", jtPctTxt(jtPct(totV, totVA)), "100 %"]],
+      columnStyles: { 1: { halign: "right" }, 2: { halign: "right" }, 3: { halign: "right" }, 4: { halign: "right" } },
+      didParseCell: (d) => { colorear(d, [3], false); if (d.section === "body" && d.row.index === D.ventasFam.length) d.cell.styles.fontStyle = "bold"; },
+    });
+
+    const y1 = pagina("", "Qué se vende", "Subfamilias con más peso y productos más vendidos del periodo.");
+    const mitad = (wc - 22) / 2;
+    const subs = D.ventasSub.slice(0, 14);
+    const lim = (s2, n) => (s2.length > n ? s2.slice(0, n - 1) + "…" : s2);
+    autoTable(doc, {
+      ...tablaBase, ...ganchoLibro, startY: y1, margin: { left: xc, right: W - xc - mitad }, tableWidth: mitad,
+      head: [["SUBFAMILIA", "PERIODO", "VAR."]],
+      body: subs.map((s2) => [lim(s2.k.replace(/^Ventas campo · /, "").split(" · ").map((q, qi, arr) => (qi === arr.length - 1 ? jtCap(q) : q)).join(" · "), 30), jtEur0(s2.a), jtPctTxt(jtPct(s2.a, s2.b))]),
+      styles: { ...tablaBase.styles, fontSize: 7.8, cellPadding: { top: 3.4, bottom: 3.4, left: 3, right: 3 } },
+      columnStyles: { 1: { halign: "right", cellWidth: 58 }, 2: { halign: "right", cellWidth: 46 } },
+      didParseCell: (d) => colorear(d, [2], false),
+    });
+    const prods = D.productos.filter((p) => p.a > 0).slice(0, 14);
+    autoTable(doc, {
+      ...tablaBase, ...ganchoLibro, startY: y1, margin: { left: xc + mitad + 22, right: M }, tableWidth: mitad,
+      head: [["PRODUCTO", "UDS.", "IMPORTE"]],
+      body: prods.map((p) => [lim(jtCap(p.k), 30), String(Math.round(p.c)), jtEur0(p.a)]),
+      styles: { ...tablaBase.styles, fontSize: 7.8, cellPadding: { top: 3.4, bottom: 3.4, left: 3, right: 3 } },
+      columnStyles: { 1: { halign: "right", cellWidth: 34 }, 2: { halign: "right", cellWidth: 58 } },
+      didParseCell: cabDer,
+    });
+  }
+
+  // ---------- Notas ----------
+  if (sec.notas) {
+    const y0 = pagina(sig(), "Cómo leer estas cifras", "Criterios de cálculo y límites de los datos.");
+    const lista = [
+      `Periodo: ${periodo}. ${D.hayAnt ? `Comparado con ${jtFechaLarga(D.dA)} al ${jtFechaLarga(D.hA)}.` : "Sin datos de comparación."}`,
+      "Ingresos: ventas del TPV del club (cuotas, ventas de campo, academia y varios) más los ingresos registrados en Finanzas. Donde el TPV tiene ventas no se cuentan también las «Ventas Campo» anotadas a mano, para no duplicar.",
+      "Gastos: transacciones registradas en Finanzas (facturas de proveedores importadas y nóminas). Solo está lo que se ha cargado en la aplicación.",
+      "Son cifras de gestión para decidir, no contabilidad oficial: no incluyen provisiones, amortizaciones ni ajustes de la gestoría.",
+      `Base del informe: ${D.nTx} transacciones y ${D.nTPV} líneas de venta del TPV dentro del periodo.`,
+      ...D.notas,
+    ];
+    let yy = y0 + 6;
+    lista.forEach((t, i) => {
+      doc.setFont("times", "italic"); doc.setFontSize(13); jtColor(doc, JT_C.salvia); doc.text(String(i + 1), xc, yy);
+      doc.setFont("times", "normal"); doc.setFontSize(11); jtColor(doc, JT_C.tinta);
+      const ls = doc.splitTextToSize(t, wc - 28);
+      doc.text(ls, xc + 24, yy, { lineHeightFactor: 1.35 });
+      yy += ls.length * 11 * 1.35 + 10;
+    });
+  }
+
+  // ---------- Cabecera y pie de las páginas interiores ----------
+  const n = doc.internal.getNumberOfPages();
+  for (let p = 2; p <= n; p++) {
+    doc.setPage(p);
+    doc.setFont("helvetica", "bold"); doc.setFontSize(7.5); jtColor(doc, JT_C.bosque);
+    doc.text(meta.club.toUpperCase(), M, 36);
+    doc.setFont("helvetica", "normal"); jtColor(doc, JT_C.gris);
+    doc.text(`${tituloInforme.toUpperCase()}   ·   ${periodoCorto}`, W - M, 36, { align: "right" });
+    jtTrazo(doc, JT_C.regla, 0.5); doc.line(M, 46, W - M, 46);
+    doc.setFont("times", "italic"); doc.setFontSize(10); jtColor(doc, JT_C.gris);
+    doc.text(`— ${p - 1} —`, W / 2, H - 26, { align: "center" });
+  }
+  doc.save(`informe_junta_${D.dI}_${D.hI}.pdf`);
+}
+
+/* ------------------------------ Excel ------------------------------ */
+async function jtExcel(D, meta) {
+  const ExcelJS = await import("exceljs");
+  const wb = new ExcelJS.Workbook();
+  wb.creator = "Golf B · Finanzas";
+  wb.created = new Date();
+  const VERDE = "FF1B3D2E", ARENA = "FFD4C096", CLARO = "FFFAF7F0";
+  const EUR = '#,##0.00 "€";[Red]-#,##0.00 "€"', PCT = '0.0%;[Red]-0.0%';
+  const cmp = D.cmpLabel ? D.cmpLabel.charAt(0).toUpperCase() + D.cmpLabel.slice(1) : "Comparación";
+
+  const hoja = (nombre, titulo, cab, filas, formatos, anchos, opts = {}) => {
+    const ws = wb.addWorksheet(nombre, { views: [{ state: "frozen", ySplit: 4, showGridLines: false }] });
+    ws.mergeCells(1, 1, 1, Math.max(cab.length, 3));
+    ws.getCell(1, 1).value = titulo;
+    ws.getCell(1, 1).font = { name: "Cambria", size: 16, bold: true, color: { argb: VERDE } };
+    ws.mergeCells(2, 1, 2, Math.max(cab.length, 3));
+    ws.getCell(2, 1).value = `${meta.club} · ${jtFechaLarga(D.dI)} al ${jtFechaLarga(D.hI)}`;
+    ws.getCell(2, 1).font = { name: "Calibri", size: 10, italic: true, color: { argb: "FF70766F" } };
+    const hr = ws.getRow(4);
+    cab.forEach((c, i) => {
+      const cell = hr.getCell(i + 1);
+      cell.value = c;
+      cell.font = { name: "Calibri", bold: true, color: { argb: VERDE }, size: 10 };
+      cell.border = { bottom: { style: "medium", color: { argb: VERDE } } };
+      cell.alignment = { vertical: "middle", horizontal: formatos[i] ? "right" : "left", wrapText: true };
+    });
+    hr.height = 26;
+    filas.forEach((f, r) => {
+      const row = ws.getRow(5 + r);
+      f.forEach((v, i) => {
+        const cell = row.getCell(i + 1);
+        cell.value = v;
+        if (formatos[i]) cell.numFmt = formatos[i];
+        cell.font = { name: "Calibri", size: 10 };
+        cell.border = { bottom: { style: "hair", color: { argb: "FFCBC6B8" } } };
+        if (r % 2 === 1) cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: CLARO } };
+      });
+    });
+    anchos.forEach((w, i) => { ws.getColumn(i + 1).width = w; });
+    if (opts.filtro !== false && filas.length) ws.autoFilter = { from: { row: 4, column: 1 }, to: { row: 4 + filas.length, column: cab.length } };
+    if (opts.total && filas.length) {
+      const tr = ws.getRow(5 + filas.length);
+      tr.getCell(1).value = "TOTAL";
+      opts.total.forEach((col) => {
+        const L = ws.getColumn(col).letter;
+        tr.getCell(col).value = { formula: `SUM(${L}5:${L}${4 + filas.length})` };
+        tr.getCell(col).numFmt = formatos[col - 1];
+      });
+      tr.eachCell({ includeEmpty: true }, (c) => { c.font = { name: "Calibri", bold: true, size: 10 }; c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFECE7D8" } }; c.border = { top: { style: "thin", color: { argb: ARENA } } }; });
+    }
+    return ws;
+  };
+
+  // Resumen
+  {
+    const ws = hoja("Resumen", "Resumen del periodo",
+      ["Concepto", "Periodo", cmp, "Diferencia", "Variación"],
+      [
+        ["Ingresos", D.tot.ing, D.hayAnt ? D.tot.ingA : null],
+        ["Gastos", D.tot.gas, D.hayAntGas ? D.tot.gasA : null],
+        ["Resultado", D.tot.res, D.hayAnt && D.hayAntGas ? D.tot.resA : null],
+      ].map((f, i) => [f[0], i === 2 ? { formula: "B5-B6" } : f[1], f[2], f[2] == null ? null : { formula: `B${5 + i}-C${5 + i}` }, f[2] == null || !f[2] ? null : { formula: `(B${5 + i}-C${5 + i})/ABS(C${5 + i})` }]),
+      [null, EUR, EUR, EUR, PCT], [28, 18, 22, 18, 14], { filtro: false });
+    ws.getCell("A9").value = "Notas";
+    ws.getCell("A9").font = { bold: true, color: { argb: VERDE } };
+    const notas = [
+      "Ingresos = ventas del TPV del club + ingresos registrados en Finanzas (sin duplicar las «Ventas Campo» ya incluidas en el TPV).",
+      "Gastos = transacciones registradas en Finanzas (facturas de proveedores importadas y nóminas).",
+      "Cifras de gestión, no contabilidad oficial.",
+      ...D.notas,
+    ];
+    notas.forEach((t, i) => { ws.getCell(10 + i, 1).value = t; ws.getCell(10 + i, 1).font = { size: 10 }; });
+  }
+
+  // Por tramos (según la segmentación elegida; si no hay, por meses)
+  {
+    const tr = D.tramos.length ? D.tramos : D.mensual;
+    const cats = [...new Set(tr.flatMap((t) => Object.keys(t.cats)))];
+    const catsG = [...new Set(tr.flatMap((t) => Object.keys(t.catsG)))];
+    const cab = ["Tramo", "Desde", "Hasta", "Ingresos", ...cats.map((c) => `Ing. · ${c}`), "Gastos", ...catsG.map((c) => `Gas. · ${c}`), "Resultado", "Margen", `Ingresos ${D.cmpLabel || "comp."}`, `Gastos ${D.cmpLabel || "comp."}`];
+    const nI = cats.length, nG = catsG.length;
+    const colL = (i) => { let s = "", n = i; while (n > 0) { const m2 = (n - 1) % 26; s = String.fromCharCode(65 + m2) + s; n = Math.floor((n - 1) / 26); } return s; };
+    const cIng = 4, cGas = 5 + nI, cRes = 6 + nI + nG, cMar = cRes + 1;
+    const filas = tr.map((t, i) => {
+      const r = 5 + i;
+      return [t.label, new Date(`${t.from}T12:00:00`), new Date(`${t.to}T12:00:00`), t.ing, ...cats.map((c) => jtR(t.cats[c] || 0)), t.gas, ...catsG.map((c) => jtR(t.catsG[c] || 0)),
+        { formula: `${colL(cIng)}${r}-${colL(cGas)}${r}` }, { formula: `IF(${colL(cIng)}${r}>0,${colL(cRes)}${r}/${colL(cIng)}${r},0)` }, D.hayAnt ? t.ingA : null, D.hayAntGas ? t.gasA : null];
+    });
+    const fm = [null, "dd/mm/yyyy", "dd/mm/yyyy", EUR, ...cats.map(() => EUR), EUR, ...catsG.map(() => EUR), EUR, PCT, EUR, EUR];
+    const ws = hoja(D.tramos.length ? "Por tramos" : "Por meses", D.tramos.length ? "Evolución por tramos" : "Evolución mensual", cab, filas, fm,
+      [12, 12, 12, 16, ...cats.map(() => 16), 16, ...catsG.map(() => 16), 16, 10, 18, 18], { filtro: false });
+    const tr2 = ws.getRow(5 + filas.length);
+    tr2.getCell(1).value = "TOTAL";
+    for (let c = 4; c <= cab.length; c++) {
+      if (c === cMar) continue;
+      const L = colL(c);
+      tr2.getCell(c).value = { formula: `SUM(${L}5:${L}${4 + filas.length})` };
+      tr2.getCell(c).numFmt = EUR;
+    }
+    tr2.getCell(cMar).value = { formula: `IF(${colL(cIng)}${5 + filas.length}>0,${colL(cRes)}${5 + filas.length}/${colL(cIng)}${5 + filas.length},0)` };
+    tr2.getCell(cMar).numFmt = PCT;
+    tr2.eachCell({ includeEmpty: true }, (c) => { c.font = { name: "Calibri", bold: true, size: 10 }; c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFECE7D8" } }; });
+  }
+
+  const tablaCats = (nombre, titulo, items, hayAnt) =>
+    hoja(nombre, titulo, ["Categoría", "Importe", "% del total", cmp, "Diferencia", "Variación"],
+      items.map((c, i) => [c.k, c.a, { formula: `B${5 + i}/SUM(B$5:B$${4 + items.length})` }, hayAnt && c.b ? c.b : null, hayAnt && c.b ? { formula: `B${5 + i}-D${5 + i}` } : null, hayAnt && c.b ? { formula: `(B${5 + i}-D${5 + i})/ABS(D${5 + i})` } : null]),
+      [null, EUR, PCT, EUR, EUR, PCT], [38, 18, 13, 22, 18, 13], { total: [2, 4] });
+  tablaCats("Ingresos", "Ingresos por categoría", D.catsIng, D.hayAnt);
+  tablaCats("Gastos", "Gastos por categoría", D.catsGas, D.hayAntGas);
+
+  if (D.proveedores.length) {
+    hoja("Proveedores", "Gasto por proveedor",
+      ["Proveedor", "Nº de facturas", "Importe", "% del gasto"],
+      D.proveedores.map((p, i) => [p.k, p.n, p.a, { formula: `C${5 + i}/SUM(C$5:C$${4 + D.proveedores.length})` }]),
+      [null, "0", EUR, PCT], [44, 14, 18, 13], { total: [2, 3] });
+  }
+  if (D.hayTPV) {
+    const fila = (x, i) => [x.k, x.a, x.b > 0 ? x.b : null, x.b > 0 ? { formula: `B${5 + i}-C${5 + i}` } : null, x.b > 0 ? { formula: `(B${5 + i}-C${5 + i})/ABS(C${5 + i})` } : null];
+    hoja("TPV por familia", "Ventas del TPV por familia", ["Familia", "Periodo", cmp, "Diferencia", "Variación"], D.ventasFam.map((x, i) => fila(x, i)), [null, EUR, EUR, EUR, PCT], [28, 18, 22, 18, 13], { total: [2, 3] });
+    hoja("TPV por subfamilia", "Ventas del TPV por subfamilia", ["Familia · Subfamilia", "Periodo", cmp, "Diferencia", "Variación"], D.ventasSub.map((x, i) => fila(x, i)), [null, EUR, EUR, EUR, PCT], [46, 18, 22, 18, 13], { total: [2, 3] });
+    hoja("TPV por producto", "Ventas del TPV por producto", ["Producto", "Unidades", "Periodo", cmp, "Diferencia"],
+      D.productos.filter((p) => p.a !== 0 || p.b !== 0).map((x, i) => [x.k, x.c, x.a, x.b > 0 ? x.b : null, x.b > 0 ? { formula: `C${5 + i}-D${5 + i}` } : null]),
+      [null, "#,##0", EUR, EUR, EUR], [56, 12, 18, 22, 18], { total: [2, 3, 4] });
+  }
+  const det = D.filas.filter((f) => f.ea && f.fuente === "Transacciones").sort((a, b) => a.d.localeCompare(b.d));
+  hoja("Detalle transacciones", "Detalle de transacciones del periodo",
+    ["Fecha", "Tipo", "Categoría", "Subcategoría", "Proveedor", "Concepto", "Importe", "Cuenta", "Nº factura"],
+    det.map((f) => [new Date(`${f.d}T12:00:00`), f.tipo === "ingreso" ? "Ingreso" : "Gasto", f.cat, f.sub, f.prov, f.desc, f.imp, f.cuenta, f.factura]),
+    ["dd/mm/yyyy", null, null, null, null, null, EUR, null, null], [12, 10, 26, 24, 30, 44, 16, 12, 18]);
+
+  const buf = await wb.xlsx.writeBuffer();
+  const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `informe_junta_${D.dI}_${D.hI}.xlsx`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function InformesView({ transacciones, ventasProshop, tenantId, entidad }) {
   const [preset, setPreset] = useState("mes");
   const now = new Date();
   const [desdeManual, setDesdeManual] = useState(new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10));
   const [hastaManual, setHastaManual] = useState(now.toISOString().slice(0, 10));
   const [incluirTransacciones, setIncluirTransacciones] = useState(true);
-  const [generando, setGenerando] = useState(null); // "excel" | "pdf" | null
+  const [generando, setGenerando] = useState(null); // "excel" | "pdf" | "junta-pdf" | "junta-excel" | null
   const [error, setError] = useState("");
+  const [jc, setJc] = useState(() => {
+    const base = { segmento: "mes", comparar: "anioant", topProv: 15, titulo: "Informe para la Junta Directiva", comentario: "", firma: "El Director-Gerente", excIng: [], excGas: [], sec: { ingresos: true, gastos: true, proveedores: true, ventas: true, notas: true } };
+    try { const g = JSON.parse(localStorage.getItem("golfb_informe_junta") || "null"); return g ? { ...base, ...g, sec: { ...base.sec, ...(g.sec || {}) } } : base; } catch (e) { return base; }
+  });
+  useEffect(() => { try { localStorage.setItem("golfb_informe_junta", JSON.stringify(jc)); } catch (e) { /* sin almacenamiento: no pasa nada */ } }, [jc]);
+  const catsJunta = useMemo(() => {
+    const ing = new Set(JT_FAMILIAS_TPV_NOMBRES), gas = new Set();
+    transacciones.forEach((t) => { if (t.type === "income") ing.add(jtCatIng(t.category)); else gas.add(String(t.category || "Sin categoría")); });
+    return { ing: [...ing].sort((a, b) => a.localeCompare(b)), gas: [...gas].sort((a, b) => a.localeCompare(b)) };
+  }, [transacciones]);
 
   const { desde, hasta } = useMemo(() => calcularRango(preset, desdeManual, hastaManual), [preset, desdeManual, hastaManual]);
 
@@ -2717,6 +3480,30 @@ function InformesView({ transacciones, ventasProshop }) {
     setGenerando(null);
   };
 
+  const generarJunta = async (formato) => {
+    setError(""); setGenerando(`junta-${formato}`);
+    try {
+      const ventas = await jtCargarVentas(tenantId, "ventas_gcr", desde, hasta, jc.comparar);
+      const D = jtConstruir({
+        transacciones, ventas, desde, hasta,
+        params: {
+          segmento: jc.segmento, comparar: jc.comparar, topProv: Number(jc.topProv) || 15,
+          filtroIng: jc.excIng.length ? new Set(catsJunta.ing.filter((c) => !jc.excIng.includes(c))) : null,
+          filtroGas: jc.excGas.length ? new Set(catsJunta.gas.filter((c) => !jc.excGas.includes(c))) : null,
+        },
+      });
+      const meta = { club: "Golf Ciudad Real C.D.", titulo: (jc.titulo || "").trim() || "Informe para la Junta Directiva", comentario: jc.comentario, firma: jc.firma };
+      if (formato === "pdf") await jtPDF(D, jc.sec, meta); else await jtExcel(D, meta);
+    } catch (e) {
+      console.warn("Error generando informe de junta:", e);
+      setError("No se ha podido generar el informe de la junta: " + (e?.message || e));
+    }
+    setGenerando(null);
+  };
+  const alternar = (lista, c) => (lista.includes(c) ? lista.filter((x) => x !== c) : [...lista, c]);
+  const campoJ = { padding: "8px 10px", borderRadius: 8, border: `1px solid ${theme.border}`, fontSize: 13.5, color: theme.ink, background: "#fff", width: "100%", boxSizing: "border-box" };
+  const rotuloJ = { display: "flex", flexDirection: "column", gap: 4, fontSize: 12, color: theme.inkSoft, fontWeight: 600 };
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
       <div style={{ fontWeight: 700, fontSize: 18, color: theme.ink }}>Informes</div>
@@ -2725,6 +3512,81 @@ function InformesView({ transacciones, ventasProshop }) {
         <div style={{ fontWeight: 700, marginBottom: 12, color: theme.ink }}>1. Elige el periodo</div>
         <SelectorRango preset={preset} setPreset={setPreset} desdeManual={desdeManual} setDesdeManual={setDesdeManual} hastaManual={hastaManual} setHastaManual={setHastaManual} />
       </Card>
+
+      {entidad === "club" && (
+        <Card style={{ borderTop: `3px solid ${theme.accent}` }}>
+          <div style={{ fontWeight: 700, color: theme.ink, fontSize: 16 }}>Informe para la Junta Directiva</div>
+          <div style={{ fontSize: 12.5, color: theme.inkSoft, margin: "4px 0 14px", lineHeight: 1.5 }}>
+            Se genera con el periodo elegido arriba y los ajustes de aquí, que se recuerdan para la próxima vez. Mezcla las ventas del TPV con lo registrado en Finanzas.
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 12, marginBottom: 12 }}>
+            <label style={rotuloJ}>Segmentar el periodo
+              <select style={campoJ} value={jc.segmento} onChange={(e) => setJc({ ...jc, segmento: e.target.value })}>
+                {JT_SEGMENTOS.map(([v, t]) => <option key={v} value={v}>{t}</option>)}
+              </select>
+            </label>
+            <label style={rotuloJ}>Comparar con
+              <select style={campoJ} value={jc.comparar} onChange={(e) => setJc({ ...jc, comparar: e.target.value })}>
+                {JT_COMPARAR.map(([v, t]) => <option key={v} value={v}>{t}</option>)}
+              </select>
+            </label>
+            <label style={rotuloJ}>Proveedores a mostrar
+              <select style={campoJ} value={jc.topProv} onChange={(e) => setJc({ ...jc, topProv: e.target.value })}>
+                {[5, 10, 15, 20, 25].map((n) => <option key={n} value={n}>{n}</option>)}
+              </select>
+            </label>
+            <label style={rotuloJ}>Título del informe
+              <input style={campoJ} value={jc.titulo} onChange={(e) => setJc({ ...jc, titulo: e.target.value })} />
+            </label>
+          </div>
+          <label style={{ ...rotuloJ, marginBottom: 12 }}>Unas palabras para la junta (opcional: sale en una página propia, con tu firma)
+            <textarea style={{ ...campoJ, minHeight: 74, resize: "vertical", fontFamily: "inherit" }} value={jc.comentario} onChange={(e) => setJc({ ...jc, comentario: e.target.value })} placeholder="Estimados miembros de la Junta…" />
+          </label>
+          <label style={{ ...rotuloJ, marginBottom: 14, maxWidth: 340 }}>Firma
+            <input style={campoJ} value={jc.firma} onChange={(e) => setJc({ ...jc, firma: e.target.value })} />
+          </label>
+          <div style={{ fontSize: 12, color: theme.inkSoft, fontWeight: 600, marginBottom: 6 }}>Secciones del PDF</div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 16, marginBottom: 12 }}>
+            {[["ingresos", "Ingresos"], ["gastos", "Gastos"], ["proveedores", "Proveedores"], ["ventas", "Ventas del TPV"], ["notas", "Notas y criterios"]].map(([k, t]) => (
+              <label key={k} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: theme.ink, cursor: "pointer" }}>
+                <input type="checkbox" checked={!!jc.sec[k]} onChange={(e) => setJc({ ...jc, sec: { ...jc.sec, [k]: e.target.checked } })} /> {t}
+              </label>
+            ))}
+          </div>
+          <details style={{ marginBottom: 16 }}>
+            <summary style={{ cursor: "pointer", fontSize: 13, fontWeight: 600, color: theme.pine }}>
+              Filtrar categorías{jc.excIng.length + jc.excGas.length > 0 ? ` · ${jc.excIng.length + jc.excGas.length} excluidas` : ""}
+            </summary>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 18, marginTop: 10 }}>
+              {[["Ingresos incluidos", catsJunta.ing, "excIng"], ["Gastos incluidos", catsJunta.gas, "excGas"]].map(([tit, lista, clave]) => (
+                <div key={clave}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: theme.ink, marginBottom: 6, display: "flex", justifyContent: "space-between" }}>
+                    {tit}
+                    <button type="button" onClick={() => setJc({ ...jc, [clave]: [] })} style={{ border: "none", background: "none", color: theme.pine, fontSize: 12, cursor: "pointer", fontWeight: 600 }}>Marcar todas</button>
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 190, overflowY: "auto" }}>
+                    {lista.map((c) => (
+                      <label key={c} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, color: theme.ink, cursor: "pointer" }}>
+                        <input type="checkbox" checked={!jc[clave].includes(c)} onChange={() => setJc({ ...jc, [clave]: alternar(jc[clave], c) })} /> {c}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </details>
+          <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+            <button onClick={() => generarJunta("pdf")} disabled={!!generando}
+              style={{ padding: "12px 22px", borderRadius: 10, border: "none", background: generando ? theme.border : theme.pine, color: "#fff", fontWeight: 700, fontSize: 14, cursor: generando ? "default" : "pointer" }}>
+              {generando === "junta-pdf" ? "Preparando PDF…" : "Descargar PDF para la junta"}
+            </button>
+            <button onClick={() => generarJunta("excel")} disabled={!!generando}
+              style={{ padding: "12px 22px", borderRadius: 10, border: `1px solid ${theme.pine}`, background: "#fff", color: theme.pine, fontWeight: 700, fontSize: 14, cursor: generando ? "default" : "pointer" }}>
+              {generando === "junta-excel" ? "Preparando Excel…" : "Descargar Excel para la junta"}
+            </button>
+          </div>
+        </Card>
+      )}
 
       <Card>
         <div style={{ fontWeight: 700, marginBottom: 6, color: theme.ink }}>2. Qué incluir</div>
@@ -6083,7 +6945,7 @@ function App() {
           <TransaccionesView transacciones={transaccionesVista} onAdd={handleAddTransaccion} onAddVarios={handleAddVarios} onActualizar={handleActualizarTransaccion} onActualizarVarios={handleActualizarVarios} categorias={categorias || CATEGORIAS_DEFECTO} tenantId={tenantId} entidad={entidad} negocio={negocioActivo} onCambiarDestino={handleCambiarDestino} onCambiarPago={handleCambiarPago} onBorrar={handleBorrarTransaccion} />
         )}
         {active === "informes" && (
-          <InformesView transacciones={transaccionesVista} ventasProshop={ventasProshopVista} />
+          <InformesView transacciones={transaccionesVista} ventasProshop={ventasProshopVista} tenantId={tenantId} entidad={entidad} />
         )}
         {active === "ventas_gcr" && <VentasGCRView tenantId={tenantId} />}
         {active === "pyg" && <PygView entidad={entidad} transacciones={transaccionesVista} />}
