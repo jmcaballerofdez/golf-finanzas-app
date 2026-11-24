@@ -701,10 +701,12 @@ function ResumenView({ transacciones: transaccionesProp, presupuestos, metas, ve
         const ls = xlCache.current[clave];
         if (ls && ls.length) {
           ls.forEach((l) => lineas.push({ date: `${l.d}T12:00:00`, d: l.d, total: Number(l.t || 0), category: xlTitulo(l.f), negocio: /academia/i.test(String(l.f || "")) ? "academia" : "proshop" }));
-          maxPorMes[id] = ls.reduce((mx, l) => (l.d > mx ? l.d : mx), "");
+          // Una línea mensual (m:1) cubre el mes entero; una diaria, hasta su día.
+          const cubre = (l) => (l.m ? vgFinMes(Number(id.slice(0, 4)), Number(id.slice(5, 7))) : l.d);
+          maxPorMes[id] = ls.reduce((mx, l) => (cubre(l) > mx ? cubre(l) : mx), "");
           ls.forEach((l) => {
             const n = /academia/i.test(String(l.f || "")) ? "academia" : "proshop";
-            if (!maxNeg[n][id] || l.d > maxNeg[n][id]) maxNeg[n][id] = l.d;
+            if (!maxNeg[n][id] || cubre(l) > maxNeg[n][id]) maxNeg[n][id] = cubre(l);
           });
         }
       }
@@ -4539,7 +4541,9 @@ function vgAgrupar(lines, modo) {
     mesanio: (l) => l.d.slice(5, 7),
   }[modo];
   const m = new Map();
+  const sinDia = modo === "dia" || modo === "semana" || modo === "diasemana";
   lines.forEach((l) => {
+    if (l.m && sinDia) return; // ventas solo conocidas por mes: no se pueden repartir por día
     const k = clave(l);
     let g = m.get(k);
     if (!g) { g = { clave: k, fam: l.f, c: 0, b: 0, i: 0, t: 0, n: 0 }; m.set(k, g); }
@@ -4612,6 +4616,7 @@ async function vgParsearTPV(file) {
   if (!crudas.length) throw new Error("el archivo está vacío");
   const K = {};
   Object.keys(crudas[0]).forEach((k) => { K[vgNorm(k).trim()] = k; });
+  if (!("fecha" in K) && "ano" in K && "mes" in K) return vgParsearMensual(crudas, K);
   const faltan = ["fecha", "familia", "subfamilia", "producto", "cantidad", "base", "iva", "total"].filter((c) => !(c in K));
   if (faltan.length) throw new Error("faltan columnas: " + faltan.join(", "));
   const filas = [];
@@ -4629,6 +4634,28 @@ async function vgParsearTPV(file) {
   return { filas, ignoradas, errores, descuadres };
 }
 
+// Excel resumido por meses (Año, Mes, Familia, Subfamilia, Producto, Cantidad, Base, IVA, Total).
+// Cada línea es el total del mes: se guarda con fecha del día 1 y la marca m:1.
+const VG_MES_NUM = { enero: 1, febrero: 2, marzo: 3, abril: 4, mayo: 5, junio: 6, julio: 7, agosto: 8, septiembre: 9, setiembre: 9, octubre: 10, noviembre: 11, diciembre: 12 };
+function vgParsearMensual(crudas, K) {
+  const faltan = ["ano", "mes", "familia", "subfamilia", "producto", "cantidad", "base", "iva", "total"].filter((c) => !(c in K));
+  if (faltan.length) throw new Error("faltan columnas: " + faltan.join(", "));
+  const filas = [];
+  const errores = [];
+  let ignoradas = 0;
+  let descuadres = 0;
+  crudas.forEach((r, i) => {
+    const y = Number(r[K.ano]);
+    const mm = typeof r[K.mes] === "number" ? r[K.mes] : VG_MES_NUM[vgNorm(r[K.mes]).trim()];
+    if (!Number.isInteger(y) || y < 2000 || y > 2100 || !(mm >= 1 && mm <= 12)) { ignoradas += 1; return; }
+    const b = vgEuro(r[K.base]), iv = vgEuro(r[K.iva]), t = vgEuro(r[K.total]), c = Number(r[K.cantidad]);
+    if (![b, iv, t, c].every(Number.isFinite)) { errores.push(i + 2); return; }
+    if (Math.abs(b + iv - t) > 0.02) descuadres += 1;
+    filas.push({ d: `${y}-${String(mm).padStart(2, "0")}-01`, f: String(r[K.familia]).trim(), s: String(r[K.subfamilia]).trim(), p: String(r[K.producto]).trim(), c: vgR2(c), b: vgR2(b), i: vgR2(iv), t: vgR2(t), m: 1 });
+  });
+  return { filas, ignoradas, errores, descuadres };
+}
+
 function vgDocMes(id, lineas) {
   const porFamilia = {};
   lineas.forEach((l) => {
@@ -4641,7 +4668,48 @@ function vgDocMes(id, lineas) {
 
 // Reglas: solo se sustituye lo que está entre la primera y la última fecha del archivo.
 // Las fechas anteriores y posteriores ya guardadas no se tocan; repetir el archivo no duplica.
+// Plan para un Excel mensual: solo se escriben los meses que NO tienen datos diarios guardados
+// (así nunca se cuenta dos veces). Los meses con datos diarios se enseñan comparados, sin tocarlos.
+function vgPlanMensual(filas, meses) {
+  const porMes = new Map();
+  filas.forEach((l) => {
+    const ym = l.d.slice(0, 7);
+    if (!porMes.has(ym)) porMes.set(ym, []);
+    porMes.get(ym).push(l);
+  });
+  const existentes = new Map((meses || []).map((m) => [m.id, m]));
+  const ids = [...porMes.keys()].sort();
+  const docs = [];
+  const omitidos = [];
+  ids.forEach((ym) => {
+    const nuevas = porMes.get(ym).slice().sort((a, b) => a.f.localeCompare(b.f) || a.s.localeCompare(b.s) || a.p.localeCompare(b.p));
+    const ex = existentes.get(ym);
+    const previas = ex ? ex.lineas || [] : [];
+    const diarias = previas.filter((l) => !l.m);
+    const totalNuevo = vgR2(nuevas.reduce((s, l) => s + l.t, 0));
+    if (diarias.length) {
+      omitidos.push({ id: ym, totalExcel: totalNuevo, totalDiario: vgR2(diarias.reduce((s, l) => s + l.t, 0)), lineasDiarias: diarias.length });
+      return;
+    }
+    docs.push({
+      id: ym, doc: vgDocMes(ym, nuevas), nuevas: nuevas.length, quitadas: previas.length,
+      totalNuevo, totalQuitado: vgR2(previas.reduce((s, l) => s + l.t, 0)), existia: !!ex,
+    });
+  });
+  const [yf, mf] = [Number(ids[ids.length - 1].slice(0, 4)), Number(ids[ids.length - 1].slice(5, 7))];
+  return {
+    mensual: true,
+    min: ids[0] + "-01", max: vgFinMes(yf, mf), docs, omitidos,
+    nuevas: docs.reduce((s, x) => s + x.nuevas, 0),
+    totalNuevo: vgR2(docs.reduce((s, x) => s + x.totalNuevo, 0)),
+    quitadas: docs.reduce((s, x) => s + x.quitadas, 0),
+    totalQuitado: vgR2(docs.reduce((s, x) => s + x.totalQuitado, 0)),
+    totalArchivo: vgR2(filas.reduce((s, l) => s + l.t, 0)), lineasArchivo: filas.length,
+  };
+}
+
 function vgPlanImport(filas, meses) {
+  if (filas[0].m) return vgPlanMensual(filas, meses);
   let min = filas[0].d, max = filas[0].d;
   filas.forEach((l) => { if (l.d < min) min = l.d; if (l.d > max) max = l.d; });
   const nuevasPorMes = new Map();
@@ -4660,9 +4728,11 @@ function vgPlanImport(filas, meses) {
     const nuevas = nuevasPorMes.get(ym) || [];
     const ex = existentes.get(ym);
     const previas = ex ? ex.lineas || [] : [];
-    const quitadas = previas.filter(dentro);
+    // Si llegan ventas diarias de un mes que solo tenía el total mensual, ese total mensual deja de hacer falta.
+    const sale = (l) => dentro(l) || (l.m && nuevas.length > 0);
+    const quitadas = previas.filter(sale);
     if (nuevas.length || quitadas.length) {
-      const lineas = [...previas.filter((l) => !dentro(l)), ...nuevas].sort(
+      const lineas = [...previas.filter((l) => !sale(l)), ...nuevas].sort(
         (a, b) => a.d.localeCompare(b.d) || a.f.localeCompare(b.f) || a.s.localeCompare(b.s) || a.p.localeCompare(b.p)
       );
       docs.push({
@@ -4766,7 +4836,7 @@ function VentasGCRView({ tenantId }) {
   };
 
   const importar = async () => {
-    if (!paquete || paquete.errores.length > 0 || paquete.bloqueo || ent === "ambas") return;
+    if (!paquete || paquete.plan.docs.length === 0 || paquete.errores.length > 0 || paquete.bloqueo || ent === "ambas") return;
     setError("");
     setResultado("");
     const docs = paquete.plan.docs;
@@ -4777,7 +4847,7 @@ function VentasGCRView({ tenantId }) {
         const { id, ...datos } = docs[i].doc;
         actual = id;
         // setDoc escribe el mes ya fusionado: repetir el mismo archivo no duplica nada.
-        await setDoc(doc(db, base, id), { ...datos, origen: "excel_tpv", importadoEn: serverTimestamp() });
+        await setDoc(doc(db, base, id), { ...datos, origen: paquete.plan.mensual ? "excel_mensual" : "excel_tpv", importadoEn: serverTimestamp() });
         setProgreso({ hechos: i + 1, total: docs.length });
       }
       setResultado(`Importación terminada: ${docs.length} ${docs.length === 1 ? "mes actualizado" : "meses actualizados"} (${vgFmtDia(paquete.plan.min)} – ${vgFmtDia(paquete.plan.max)}).`);
@@ -5396,6 +5466,7 @@ function VentasGCRView({ tenantId }) {
             </div>
             <div style={{ color: theme.inkSoft, fontSize: 13, marginBottom: 14, lineHeight: 1.5 }}>
               Elige el Excel que exporta el TPV (<b>Ventas agrupadas por Familia, Subfamilias y Productos por días</b>). Puede traer solo unos días o meses nuevos.
+              También vale el Excel resumido por meses (columnas Año, Mes, Familia…): sirve para los meses en los que no hay datos diarios; los meses que ya tienen datos diarios no se tocan.
               Se sustituye únicamente lo que está entre la primera y la última fecha del archivo; el resto del histórico no se toca, y si repites el mismo archivo no se duplica nada.
               Antes de guardar te enseño qué cambia.
             </div>
@@ -5406,7 +5477,10 @@ function VentasGCRView({ tenantId }) {
               <div style={{ marginTop: 16 }}>
                 <div style={{ padding: 12, background: theme.accentSoft, borderRadius: 10, fontSize: 14, color: theme.ink, lineHeight: 1.6 }}>
                   <div><b>{paquete.nombre}</b></div>
-                  <div>Del <b>{vgFmtDia(paquete.plan.min)}</b> al <b>{vgFmtDia(paquete.plan.max)}</b></div>
+                  <div>Del <b>{vgFmtDia(paquete.plan.min)}</b> al <b>{vgFmtDia(paquete.plan.max)}</b>{paquete.plan.mensual ? " · resumen por meses" : ""}</div>
+                  {paquete.plan.mensual && (
+                    <div>Archivo completo: <b>{paquete.plan.lineasArchivo.toLocaleString("es-ES")}</b> líneas · <b>{fmtEUR(paquete.plan.totalArchivo)}</b>. Se guardan <b>{paquete.plan.docs.length}</b> meses y se respetan <b>{paquete.plan.omitidos.length}</b> que ya tienen datos diarios.</div>
+                  )}
                   <div><b>{paquete.plan.nuevas.toLocaleString("es-ES")}</b> líneas del archivo · <b>{fmtEUR(paquete.plan.totalNuevo)}</b></div>
                   <div>
                     {paquete.plan.quitadas > 0
@@ -5434,6 +5508,35 @@ function VentasGCRView({ tenantId }) {
                 {paquete.ignoradas > 0 && (
                   <div style={{ marginTop: 10, fontSize: 12, color: theme.inkSoft }}>
                     {paquete.ignoradas} {paquete.ignoradas === 1 ? "fila sin fecha válida ignorada" : "filas sin fecha válida ignoradas"} (por ejemplo, la fila de totales del final).
+                  </div>
+                )}
+
+                {paquete.plan.mensual && (
+                  <div style={{ marginTop: 10, background: theme.accentSoft, color: theme.ink, padding: 10, borderRadius: 10, fontSize: 13, lineHeight: 1.5 }}>
+                    Estas ventas se guardan como total de cada mes (anotadas el día 1). Entran en los informes por mes, año, familia y producto, y en las comparativas; no aparecen en los informes por día, semana ni día de la semana. Si más adelante subes las ventas diarias de un mes, sustituyen a su total mensual.
+                  </div>
+                )}
+                {paquete.plan.mensual && paquete.plan.omitidos.length > 0 && (
+                  <div style={{ overflowX: "auto", marginTop: 12 }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: theme.ink, marginBottom: 6 }}>Meses que ya tienen datos diarios (no se tocan) · comprobación</div>
+                    <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                      <thead>
+                        <tr><th style={th}>Mes</th><th style={{ ...th, ...r }}>Total Excel mensual</th><th style={{ ...th, ...r }}>Total diario guardado</th><th style={{ ...th, ...r }}>Diferencia</th></tr>
+                      </thead>
+                      <tbody>
+                        {paquete.plan.omitidos.slice(-24).map((x) => (
+                          <tr key={x.id}>
+                            <td style={td}>{x.id}</td>
+                            <td style={{ ...td, ...r }}>{fmtEUR(x.totalExcel)}</td>
+                            <td style={{ ...td, ...r }}>{fmtEUR(x.totalDiario)}</td>
+                            <td style={{ ...td, ...r, color: Math.abs(x.totalExcel - x.totalDiario) > 1 ? theme.danger : theme.inkSoft }}>{fmtEUR(x.totalExcel - x.totalDiario)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    {paquete.plan.omitidos.length > 24 && (
+                      <div style={{ fontSize: 12, color: theme.inkSoft, marginTop: 6 }}>Se muestran los 24 últimos meses de {paquete.plan.omitidos.length}.</div>
+                    )}
                   </div>
                 )}
 
@@ -5468,7 +5571,7 @@ function VentasGCRView({ tenantId }) {
             )}
 
             <div style={{ marginTop: 16, display: "flex", alignItems: "center", gap: 12 }}>
-              <button onClick={importar} disabled={!paquete || paquete.errores.length > 0 || !!paquete.bloqueo || !!progreso} style={boton(!!paquete && paquete.errores.length === 0 && !paquete.bloqueo && !progreso)}>
+              <button onClick={importar} disabled={!paquete || paquete.plan.docs.length === 0 || paquete.errores.length > 0 || !!paquete.bloqueo || !!progreso} style={boton(!!paquete && paquete.plan.docs.length > 0 && paquete.errores.length === 0 && !paquete.bloqueo && !progreso)}>
                 {progreso ? "Importando…" : paquete ? `Guardar ${paquete.plan.docs.length} ${paquete.plan.docs.length === 1 ? "mes" : "meses"}` : "Guardar"}
               </button>
               {progreso && <span style={{ fontSize: 14, color: theme.inkSoft }}>{progreso.hechos} de {progreso.total} meses</span>}
