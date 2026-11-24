@@ -812,7 +812,7 @@ function ResumenView({ transacciones: transaccionesProp, presupuestos, metas, ve
   const delMes = transacciones.filter((t) => monthKey(t.date) === currentMonth);
   const presupuestosAlerta = presupuestos
     .map((p) => {
-      const gastado = gastoDePresupuesto(p, delMes) + nominasDePresupuesto(p, now.getMonth() + 1);
+      const gastado = gastoDePresupuesto(p, delMes) + nominasDePresupuesto(p, now.getMonth() + 1, delMes);
       return { ...p, gastado, pct: (gastado / Number(p.monthly_limit)) * 100 };
     })
     .filter((p) => p.pct >= 80)
@@ -2098,7 +2098,36 @@ function TransaccionesView({ transacciones, onAdd, onAddVarios, onActualizar, on
   const [showScan, setShowScan] = useState(false);
   const [showImportar, setShowImportar] = useState(false);
   const [showProveedores, setShowProveedores] = useState(false);
+  const [cargandoNominas, setCargandoNominas] = useState(false);
   const [datosDetectados, setDatosDetectados] = useState(null);
+  // Carga las nóminas de 2026 (resúmenes de la gestoría) como gastos de personal del club: por mes, "Sueldos y salarios" y "Seguridad Social".
+  // Cada una tiene un identificador fijo: si se vuelve a pulsar, se actualizan, no se duplican.
+  const cargarNominas2026 = async () => {
+    const MESES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
+    const totalB = PYG_NOMINAS_2026.reduce((a, x) => a + x.bruto, 0);
+    const totalS = PYG_NOMINAS_2026.reduce((a, x) => a + x.ss, 0);
+    if (!window.confirm(`Se van a cargar las nóminas de ${PYG_NOMINAS_2026.length} meses (enero-${MESES[PYG_NOMINAS_2026[PYG_NOMINAS_2026.length - 1].m - 1]} 2026) como gastos del club:\n\n· Sueldos y salarios: ${fmtEUR(totalB)}\n· Seguridad Social a cargo de la empresa: ${fmtEUR(totalS)}\n\nSi ya estaban cargadas, se actualizan sin duplicarse. ¿Continuar?`)) return;
+    setCargandoNominas(true);
+    try {
+      for (const x of PYG_NOMINAS_2026) {
+        const mm = String(x.m).padStart(2, "0");
+        const fecha = new Date(Date.UTC(2026, x.m, 0)).toISOString(); // último día del mes
+        const comun = { type: "expense", subcategory: "", activity: "", iva_type: "", base_amount: null, iva_amount: null, irpf_deductible: "no", metodo_pago: "", entidad: "club", negocio: null, origen: "nominas", date: fecha, trabajadores: x.n };
+        await setDoc(doc(db, `clubes/${tenantId}/finanzas_transacciones`, `nomina-2026-${mm}-sueldos`), {
+          ...comun, category: "Sueldos y salarios", proveedor: "Nóminas", cuenta: "64000000",
+          description: `Nóminas ${MESES[x.m - 1]} 2026 (${x.n} trabajadores)`, amount: x.bruto.toFixed(2), created_at: serverTimestamp(),
+        });
+        await setDoc(doc(db, `clubes/${tenantId}/finanzas_transacciones`, `nomina-2026-${mm}-ss`), {
+          ...comun, category: "Seguridad Social", proveedor: "Seguridad Social (TGSS)", cuenta: "64200000",
+          description: `Seguridad Social a cargo de la empresa, ${MESES[x.m - 1]} 2026`, amount: x.ss.toFixed(2), created_at: serverTimestamp(),
+        });
+      }
+      window.alert(`Listo: ${PYG_NOMINAS_2026.length * 2} gastos de personal cargados en Golf Ciudad Real.`);
+    } catch (e) {
+      window.alert("No se han podido cargar las nóminas: " + (e?.message || e));
+    }
+    setCargandoNominas(false);
+  };
   const [errorTicket, setErrorTicket] = useState("");
   const abrirTicket = async (t) => {
     setErrorTicket("");
@@ -2148,6 +2177,16 @@ function TransaccionesView({ transacciones, onAdd, onAddVarios, onActualizar, on
               style={{ display: "flex", alignItems: "center", gap: 6, background: "#fff", color: theme.pine, border: `1px solid ${theme.border}`, padding: "8px 14px", fontWeight: 600, cursor: "pointer" }}
             >
               <Upload size={16} /> Importar proveedores
+            </button>
+          )}
+          {entidad === "club" && (
+            <button
+              onClick={cargarNominas2026}
+              disabled={cargandoNominas}
+              className="rounded-md"
+              style={{ display: "flex", alignItems: "center", gap: 6, background: "#fff", color: theme.pine, border: `1px solid ${theme.border}`, padding: "8px 14px", fontWeight: 600, cursor: "pointer", opacity: cargandoNominas ? 0.6 : 1 }}
+            >
+              <Upload size={16} /> {cargandoNominas ? "Cargando…" : "Cargar nóminas 2026"}
             </button>
           )}
           <button
@@ -2696,9 +2735,10 @@ const gastoDePresupuesto = (p, txs) =>
     .reduce((s, t) => s + Number(t.amount || 0), 0);
 
 // Nóminas de 2026 (totales mensuales). mes: 1-12 o null para todo el año.
-const nominasDePresupuesto = (p, mes) => {
+const nominasDePresupuesto = (p, mes, txs = []) => {
   if (!Array.isArray(p.cuentas)) return 0;
-  const lista = PYG_NOMINAS_2026.filter((x) => mes === null || x.m === mes);
+  const cargados = new Set(txs.filter((t) => t.origen === "nominas").map((t) => aFecha(t.date).getMonth() + 1));
+  const lista = PYG_NOMINAS_2026.filter((x) => (mes === null || x.m === mes) && !cargados.has(x.m));
   return lista.reduce((a, x) => a + (p.cuentas.includes("64000000") ? x.bruto : 0) + (p.cuentas.includes("64200000") ? x.ss : 0), 0);
 };
 
@@ -2749,8 +2789,8 @@ function PresupuestosView({ presupuestos, transacciones, tenantId, entidad }) {
       )}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16 }}>
         {presupuestos.map((p) => {
-          const gastado = gastoDePresupuesto(p, delMes) + nominasDePresupuesto(p, now.getMonth() + 1);
-          const gastadoAnio = p.annual_limit ? gastoDePresupuesto(p, delAnio) + nominasDePresupuesto(p, null) : 0;
+          const gastado = gastoDePresupuesto(p, delMes) + nominasDePresupuesto(p, now.getMonth() + 1, delMes);
+          const gastadoAnio = p.annual_limit ? gastoDePresupuesto(p, delAnio) + nominasDePresupuesto(p, null, delAnio) : 0;
           return (
             <Card key={p.id}>
               <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8, gap: 8 }}>
@@ -3914,15 +3954,17 @@ const pygCorto = (n) => (Math.abs(n) >= 1000 ? `${Math.round(n / 1000)} k` : Str
 // Nóminas 2026 (resúmenes de nómina de la gestoría). Solo totales mensuales de empresa, sin datos por trabajador.
 // bruto = Sueldos y salarios (64000000). ss = Seguridad Social a cargo de la empresa (64200000) = coste empresa - bruto.
 const PYG_NOMINAS_2026 = [
-  { m: 1, bruto: 13491.74, ss: 2482.23 }, { m: 2, bruto: 11421.77, ss: 2908.24 }, { m: 3, bruto: 11494.50, ss: 3002.06 },
-  { m: 4, bruto: 11488.86, ss: 3061.36 }, { m: 5, bruto: 12917.22, ss: 3915.71 }, { m: 6, bruto: 12322.07, ss: 3731.56 },
-  { m: 7, bruto: 12608.09, ss: 3832.64 }, { m: 8, bruto: 12584.09, ss: 3629.41 }, { m: 9, bruto: 12308.57, ss: 3731.73 },
-  { m: 10, bruto: 11093.46, ss: 3322.82 },
+  { m: 1, bruto: 13491.74, ss: 2482.23, n: 6 }, { m: 2, bruto: 11421.77, ss: 2908.24, n: 6 }, { m: 3, bruto: 11494.50, ss: 3002.06, n: 6 },
+  { m: 4, bruto: 11488.86, ss: 3061.36, n: 6 }, { m: 5, bruto: 12917.22, ss: 3915.71, n: 7 }, { m: 6, bruto: 12322.07, ss: 3731.56, n: 7 },
+  { m: 7, bruto: 12608.09, ss: 3832.64, n: 7 }, { m: 8, bruto: 12584.09, ss: 3629.41, n: 7 }, { m: 9, bruto: 12308.57, ss: 3731.73, n: 7 },
+  { m: 10, bruto: 11093.46, ss: 3322.82, n: 6 },
 ];
 
 // 2026 en curso: gastos de proveedores (facturas importadas) por cuenta contable + nóminas mensuales. No incluye seguros, renting ni ingresos.
 function pygDerivar2026(transacciones) {
-  const tx = (transacciones || []).filter((t) => t.origen === "proveedores" && t.type === "expense" && t.cuenta && aFecha(t.date).getFullYear() === 2026);
+  const tx = (transacciones || []).filter((t) => (t.origen === "proveedores" || t.origen === "nominas") && t.type === "expense" && t.cuenta && aFecha(t.date).getFullYear() === 2026);
+  const mesesConNomina = new Set(tx.filter((t) => t.origen === "nominas").map((t) => aFecha(t.date).getMonth() + 1));
+  const nominasEmb = PYG_NOMINAS_2026.filter((x) => !mesesConNomina.has(x.m)); // solo los meses cuyas nóminas aún no se han cargado
   if (!tx.length && !PYG_NOMINAS_2026.length) return null;
   const porCuenta = {};
   let corte = null;
@@ -3930,10 +3972,10 @@ function pygDerivar2026(transacciones) {
     porCuenta[t.cuenta] = (porCuenta[t.cuenta] || 0) + Number(t.amount || 0);
     const f = aFecha(t.date); if (!corte || f > corte) corte = f;
   });
-  const sumBruto = PYG_NOMINAS_2026.reduce((a, x) => a + x.bruto, 0);
-  const sumSS = PYG_NOMINAS_2026.reduce((a, x) => a + x.ss, 0);
-  porCuenta["64000000"] = (porCuenta["64000000"] || 0) + sumBruto;
-  porCuenta["64200000"] = (porCuenta["64200000"] || 0) + sumSS;
+  const sumBruto = nominasEmb.reduce((a, x) => a + x.bruto, 0);
+  const sumSS = nominasEmb.reduce((a, x) => a + x.ss, 0);
+  if (sumBruto) porCuenta["64000000"] = (porCuenta["64000000"] || 0) + sumBruto;
+  if (sumSS) porCuenta["64200000"] = (porCuenta["64200000"] || 0) + sumSS;
   if (!corte) corte = new Date(2026, PYG_NOMINAS_2026[PYG_NOMINAS_2026.length - 1].m, 0);
   const idGrupo = (c) => (c.startsWith("60") ? "aprov" : c.startsWith("64") ? "personal" : c.startsWith("68") ? "amort" : c.startsWith("66") ? "fin" : "otrosgas");
   const grupos = {};
