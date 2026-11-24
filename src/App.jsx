@@ -2092,6 +2092,20 @@ function ImportarProveedoresModal({ onClose, tenantId, transacciones }) {
   );
 }
 
+// Mi nómina en Golf Ciudad Real (resúmenes de nómina de la gestoría): líquido pagado cada mes. "anticipo" = descuento de anticipos ya deducido del líquido.
+const NOMINAS_JOSE_2026 = [
+  { m: 1, dia: 31, bruto: 2703.40, liquido: 2100.00, anticipo: 0 },
+  { m: 2, dia: 28, bruto: 2703.40, liquido: 2100.00, anticipo: 0 },
+  { m: 3, dia: 31, bruto: 2701.99, liquido: 2100.00, anticipo: 0 },
+  { m: 4, dia: 30, bruto: 2702.35, liquido: 1951.08, anticipo: 148.92 },
+  { m: 5, dia: 31, bruto: 2702.35, liquido: 2100.00, anticipo: 0 },
+  { m: 6, dia: 30, bruto: 2702.35, liquido: 1897.35, anticipo: 202.65 },
+  { m: 7, dia: 31, bruto: 2702.35, liquido: 2100.00, anticipo: 0 },
+  { m: 8, dia: 31, bruto: 2702.35, liquido: 2100.00, anticipo: 0 },
+  { m: 9, dia: 30, bruto: 2702.35, liquido: 2100.00, anticipo: 0 },
+  { m: 10, dia: 31, bruto: 2702.35, liquido: 2100.00, anticipo: 0 },
+];
+
 function TransaccionesView({ transacciones, onAdd, onAddVarios, onActualizar, onActualizarVarios, categorias, tenantId, entidad, negocio, onCambiarDestino, onCambiarPago, onBorrar }) {
   const [showForm, setShowForm] = useState(false);
   const [txEditando, setTxEditando] = useState(null);
@@ -2099,6 +2113,28 @@ function TransaccionesView({ transacciones, onAdd, onAddVarios, onActualizar, on
   const [showImportar, setShowImportar] = useState(false);
   const [showProveedores, setShowProveedores] = useState(false);
   const [cargandoNominas, setCargandoNominas] = useState(false);
+  // Carga mi nómina de 2026 como ingreso de la economía Personal (líquido de cada mes). Identificador fijo: no se duplica.
+  const cargarMiNomina2026 = async () => {
+    const MESES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
+    const total = NOMINAS_JOSE_2026.reduce((a, x) => a + x.liquido, 0);
+    if (!window.confirm(`Se va a cargar tu nómina de Golf Ciudad Real (${NOMINAS_JOSE_2026.length} meses, enero-${MESES[NOMINAS_JOSE_2026[NOMINAS_JOSE_2026.length - 1].m - 1]} 2026) como ingreso Personal:\n\n· Líquido total: ${fmtEUR(total)}\n· Forma de pago: Transferencia\n\nSi ya estaba cargada, se actualiza sin duplicarse. ¿Continuar?`)) return;
+    setCargandoNominas(true);
+    try {
+      for (const x of NOMINAS_JOSE_2026) {
+        const mm = String(x.m).padStart(2, "0");
+        await setDoc(doc(db, `clubes/${tenantId}/finanzas_transacciones`, `nomina-jmcf-2026-${mm}`), {
+          type: "income", category: "Nómina", subcategory: "", proveedor: "Golf Ciudad Real C.D.",
+          description: `Nómina ${MESES[x.m - 1]} 2026 (bruto ${fmtEUR(x.bruto)})${x.anticipo ? ` · descontado anticipo de ${fmtEUR(x.anticipo)}` : ""}`,
+          amount: x.liquido.toFixed(2), date: new Date(Date.UTC(2026, x.m - 1, x.dia)).toISOString(), activity: "", iva_type: "", base_amount: null, iva_amount: null,
+          irpf_deductible: "no", metodo_pago: "Transferencia", entidad: "jmcf", negocio: "personal", origen: "nomina_personal", created_at: serverTimestamp(),
+        });
+      }
+      window.alert(`Listo: ${NOMINAS_JOSE_2026.length} nóminas cargadas como ingreso Personal.`);
+    } catch (e) {
+      window.alert("No se ha podido cargar tu nómina: " + (e?.message || e));
+    }
+    setCargandoNominas(false);
+  };
   const [datosDetectados, setDatosDetectados] = useState(null);
   // Carga las nóminas de 2026 (resúmenes de la gestoría) como gastos de personal del club: por mes, "Sueldos y salarios" y "Seguridad Social".
   // Cada una tiene un identificador fijo: si se vuelve a pulsar, se actualizan, no se duplican.
@@ -2177,6 +2213,16 @@ function TransaccionesView({ transacciones, onAdd, onAddVarios, onActualizar, on
               style={{ display: "flex", alignItems: "center", gap: 6, background: "#fff", color: theme.pine, border: `1px solid ${theme.border}`, padding: "8px 14px", fontWeight: 600, cursor: "pointer" }}
             >
               <Upload size={16} /> Importar proveedores
+            </button>
+          )}
+          {entidad === "jmcf" && (
+            <button
+              onClick={cargarMiNomina2026}
+              disabled={cargandoNominas}
+              className="rounded-md"
+              style={{ display: "flex", alignItems: "center", gap: 6, background: "#fff", color: theme.pine, border: `1px solid ${theme.border}`, padding: "8px 14px", fontWeight: 600, cursor: "pointer", opacity: cargandoNominas ? 0.6 : 1 }}
+            >
+              <Upload size={16} /> {cargandoNominas ? "Cargando…" : "Cargar mi nómina 2026"}
             </button>
           )}
           {entidad === "club" && (
