@@ -5857,6 +5857,7 @@ const BONUS_FAMILIAS = [
   ["Green fees", (l) => vgNorm(l.s).trim().startsWith("gfs") && !vgNorm(l.s).includes("recarga")],
   ["Alquileres", (l) => ["alquileres", "alquileres mensuales"].includes(vgNorm(l.s).trim())],
   ["Academia (escuela infantil)", (l) => vgNorm(l.f).trim() === "academia" && vgNorm(l.s).trim() === "escuela infantil"],
+  ["Bolas de prácticas", (l) => vgNorm(l.s).trim() === "bolas de practicas"],
 ];
 
 function BonusVentas({ flat, ent }) {
@@ -5970,7 +5971,7 @@ function BonusVentas({ flat, ent }) {
       <Card style={{ marginBottom: 16, overflowX: "auto" }}>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", marginBottom: 10 }}>
           <div style={{ fontWeight: 700, color: theme.ink, marginRight: 8 }}>Evolución</div>
-          {[[-1, "Las cuatro juntas"], ...BONUS_FAMILIAS.map(([n], i) => [i, n])].map(([id, nombre]) => (
+          {[[-1, "Todas juntas"], ...BONUS_FAMILIAS.map(([n], i) => [i, n])].map(([id, nombre]) => (
             <button key={id} onClick={() => setFam(id)} style={{ padding: "6px 12px", borderRadius: 999, fontSize: 13, fontWeight: 600, cursor: "pointer", border: `1px solid ${fam === id ? theme.pine : theme.border}`, background: fam === id ? theme.pine : "#fff", color: fam === id ? "#fff" : theme.ink }}>{nombre}</button>
           ))}
         </div>
