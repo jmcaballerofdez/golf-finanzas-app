@@ -5857,7 +5857,7 @@ const BONUS_FAMILIAS = [
   ["Green fees", (l) => vgNorm(l.s).trim().startsWith("gfs") && !vgNorm(l.s).includes("recarga")],
   ["Alquileres", (l) => ["alquileres", "alquileres mensuales"].includes(vgNorm(l.s).trim())],
   ["Academia (escuela infantil)", (l) => vgNorm(l.f).trim() === "academia" && vgNorm(l.s).trim() === "escuela infantil"],
-  ["Bolas de prácticas", (l) => vgNorm(l.s).trim() === "bolas de practicas"],
+  ["Bolas de prácticas", (l) => ["bolas de practicas", "uso practicas"].includes(vgNorm(l.s).trim())],
 ];
 
 function BonusVentas({ flat, ent }) {
