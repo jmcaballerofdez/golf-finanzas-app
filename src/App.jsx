@@ -5850,6 +5850,153 @@ function PanelVentas({ flat }) {
   );
 }
 
+/* ---------------- Bonus por familia (20 % de lo que se supera al año anterior) ---------------- */
+const BONUS_PORC = 0.2;
+const BONUS_FAMILIAS = [
+  ["Cuotas sociales", (l) => vgNorm(l.s).trim() === "cuota mensual social"],
+  ["Green fees", (l) => vgNorm(l.s).trim().startsWith("gfs") && !vgNorm(l.s).includes("recarga")],
+  ["Alquileres", (l) => ["alquileres", "alquileres mensuales"].includes(vgNorm(l.s).trim())],
+  ["Academia (escuela infantil)", (l) => vgNorm(l.f).trim() === "academia" && vgNorm(l.s).trim() === "escuela infantil"],
+];
+
+function BonusVentas({ flat, ent }) {
+  const [fam, setFam] = useState(-1); // -1 = las cuatro familias juntas
+  const datos = useMemo(() => {
+    const diarias = flat.filter((l) => !l.m);
+    if (!diarias.length) return null;
+    let corte = diarias[0].d;
+    diarias.forEach((l) => { if (l.d > corte) corte = l.d; });
+    const y = Number(corte.slice(0, 4));
+    const corteAnt = vgAnioAnt(corte);
+    const finMes = (ym) => vgFinMes(Number(ym.slice(0, 4)), Number(ym.slice(5, 7)));
+    // Una línea solo-mensual cuenta solo si su mes entero cabe en el tramo (así no se cuenta de más a misma fecha).
+    const dentro = (l, desde, hasta) => (l.m ? l.d >= desde && finMes(l.d.slice(0, 7)) <= hasta : l.d >= desde && l.d <= hasta);
+    const suma = (pred, desde, hasta) => vgR2(flat.filter((l) => pred(l) && dentro(l, desde, hasta)).reduce((s, l) => s + l.t, 0));
+    const filas = BONUS_FAMILIAS.map(([nombre, pred]) => {
+      const a = suma(pred, `${y}-01-01`, corte);
+      const igual = suma(pred, `${y - 1}-01-01`, corteAnt);
+      const total = suma(pred, `${y - 1}-01-01`, `${y - 1}-12-31`);
+      return {
+        nombre, a, igual, total,
+        difIgual: vgR2(a - igual), bonoIgual: vgR2(BONUS_PORC * Math.max(0, a - igual)),
+        difTotal: vgR2(a - total), bonoTotal: vgR2(BONUS_PORC * Math.max(0, a - total)), pct: total ? (a / total) * 100 : null,
+      };
+    });
+    const pred = fam < 0 ? (l) => BONUS_FAMILIAS.some(([, p]) => p(l)) : BONUS_FAMILIAS[fam][1];
+    const mesCorte = Number(corte.slice(5, 7));
+    const meses = [];
+    for (let m = 1; m < mesCorte; m++) {
+      const mm = String(m).padStart(2, "0");
+      const a = suma(pred, `${y}-${mm}-01`, vgFinMes(y, m));
+      const b = suma(pred, `${y - 1}-${mm}-01`, vgFinMes(y - 1, m));
+      meses.push({ mes: m, a, b, dif: vgR2(a - b) });
+    }
+    const dias = [];
+    const diaCorte = Number(corte.slice(8, 10));
+    const porDia = (anio) => {
+      const mp = new Map();
+      flat.forEach((l) => { if (!l.m && pred(l) && l.d.slice(0, 7) === `${anio}-${String(mesCorte).padStart(2, "0")}`) mp.set(l.d, (mp.get(l.d) || 0) + l.t); });
+      return mp;
+    };
+    const d26 = porDia(y), d25 = porDia(y - 1);
+    let acA = 0, acB = 0;
+    for (let d = 1; d <= diaCorte; d++) {
+      const dd = String(d).padStart(2, "0");
+      acA += d26.get(`${y}-${String(mesCorte).padStart(2, "0")}-${dd}`) || 0;
+      acB += d25.get(`${y - 1}-${String(mesCorte).padStart(2, "0")}-${dd}`) || 0;
+      dias.push({ dia: d, a: vgR2(acA), b: vgR2(acB), dif: vgR2(acA - acB) });
+    }
+    return {
+      corte, corteAnt, y, mesCorte, filas, meses, dias,
+      bonoIgual: vgR2(filas.reduce((s, f) => s + f.bonoIgual, 0)),
+      bonoTotal: vgR2(filas.reduce((s, f) => s + f.bonoTotal, 0)),
+    };
+  }, [flat, fam]);
+
+  if (ent !== "gcr") return <Card><div style={{ color: theme.inkSoft, fontSize: 14 }}>El bonus se calcula con las ventas de Golf Ciudad Real. Elige esa entidad arriba.</div></Card>;
+  if (!datos) return <Card><div style={{ color: theme.inkSoft, fontSize: 14 }}>No hay ventas diarias cargadas para calcular el bonus.</div></Card>;
+
+  const th = { textAlign: "right", padding: "8px 12px", fontSize: 12, color: theme.inkSoft, borderBottom: `1px solid ${theme.border}`, whiteSpace: "nowrap" };
+  const td = { textAlign: "right", padding: "8px 12px", fontSize: 14, color: theme.ink, borderBottom: `1px solid ${theme.border}`, fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" };
+  const colorDif = (v) => ({ color: v >= 0 ? theme.success : theme.danger });
+  const signo = (v) => (v > 0 ? "+" : "") + fmtEUR(v);
+  const D = datos;
+  const tot = (k) => vgR2(D.filas.reduce((s, f) => s + f[k], 0));
+
+  return (
+    <>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 12, marginBottom: 16 }}>
+        <Card>
+          <div style={{ fontSize: 12, color: theme.inkSoft, fontWeight: 600 }}>Bonus a misma fecha (1 ene – {vgFmtDia(D.corte)} contra {vgFmtDia(D.corteAnt)} del año anterior)</div>
+          <div style={{ fontSize: 28, fontWeight: 700, color: theme.ink, marginTop: 6 }}>{fmtEUR(D.bonoIgual)}</div>
+        </Card>
+        <Card>
+          <div style={{ fontSize: 12, color: theme.inkSoft, fontWeight: 600 }}>Bonus frente al {D.y - 1} completo</div>
+          <div style={{ fontSize: 28, fontWeight: 700, color: theme.ink, marginTop: 6 }}>{fmtEUR(D.bonoTotal)}</div>
+        </Card>
+      </div>
+
+      <Card style={{ marginBottom: 16, overflowX: "auto" }}>
+        <div style={{ fontWeight: 700, color: theme.ink, marginBottom: 4 }}>Por familia</div>
+        <div style={{ fontSize: 12, color: theme.inkSoft, marginBottom: 10 }}>Importes con IVA incluido. El bonus es el {BONUS_PORC * 100} % de lo que cada familia supera al año anterior; las que van por debajo no restan. No depende del periodo elegido arriba.</div>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead><tr>
+            <th style={{ ...th, textAlign: "left" }}>Familia</th>
+            <th style={th}>{D.y - 1} misma fecha</th><th style={th}>{D.y} hasta hoy</th><th style={th}>Diferencia</th><th style={th}>Bonus</th>
+            <th style={th}>{D.y - 1} completo</th><th style={th}>Diferencia</th><th style={th}>Bonus</th><th style={th}>% del {D.y - 1}</th>
+          </tr></thead>
+          <tbody>
+            {D.filas.map((f) => (
+              <tr key={f.nombre}>
+                <td style={{ ...td, textAlign: "left" }}>{f.nombre}</td>
+                <td style={td}>{fmtEUR(f.igual)}</td><td style={td}>{fmtEUR(f.a)}</td>
+                <td style={{ ...td, ...colorDif(f.difIgual) }}>{signo(f.difIgual)}</td><td style={{ ...td, fontWeight: 700 }}>{fmtEUR(f.bonoIgual)}</td>
+                <td style={td}>{fmtEUR(f.total)}</td>
+                <td style={{ ...td, ...colorDif(f.difTotal) }}>{signo(f.difTotal)}</td><td style={{ ...td, fontWeight: 700 }}>{fmtEUR(f.bonoTotal)}</td>
+                <td style={td}>{f.pct == null ? "—" : f.pct.toFixed(1).replace(".", ",") + " %"}</td>
+              </tr>
+            ))}
+            <tr>
+              <td style={{ ...td, textAlign: "left", fontWeight: 700 }}>Total</td>
+              <td style={{ ...td, fontWeight: 700 }}>{fmtEUR(tot("igual"))}</td><td style={{ ...td, fontWeight: 700 }}>{fmtEUR(tot("a"))}</td>
+              <td style={td}></td><td style={{ ...td, fontWeight: 700 }}>{fmtEUR(D.bonoIgual)}</td>
+              <td style={{ ...td, fontWeight: 700 }}>{fmtEUR(tot("total"))}</td>
+              <td style={td}></td><td style={{ ...td, fontWeight: 700 }}>{fmtEUR(D.bonoTotal)}</td><td style={td}></td>
+            </tr>
+          </tbody>
+        </table>
+      </Card>
+
+      <Card style={{ marginBottom: 16, overflowX: "auto" }}>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", marginBottom: 10 }}>
+          <div style={{ fontWeight: 700, color: theme.ink, marginRight: 8 }}>Evolución</div>
+          {[[-1, "Las cuatro juntas"], ...BONUS_FAMILIAS.map(([n], i) => [i, n])].map(([id, nombre]) => (
+            <button key={id} onClick={() => setFam(id)} style={{ padding: "6px 12px", borderRadius: 999, fontSize: 13, fontWeight: 600, cursor: "pointer", border: `1px solid ${fam === id ? theme.pine : theme.border}`, background: fam === id ? theme.pine : "#fff", color: fam === id ? "#fff" : theme.ink }}>{nombre}</button>
+          ))}
+        </div>
+        <div style={{ fontSize: 12, color: theme.inkSoft, marginBottom: 6 }}>Meses completos</div>
+        <table style={{ width: "100%", borderCollapse: "collapse", marginBottom: 16 }}>
+          <thead><tr><th style={{ ...th, textAlign: "left" }}>Mes</th><th style={th}>{D.y - 1}</th><th style={th}>{D.y}</th><th style={th}>Diferencia</th></tr></thead>
+          <tbody>
+            {D.meses.map((m) => (
+              <tr key={m.mes}><td style={{ ...td, textAlign: "left" }}>{VG_MESES[m.mes - 1]}</td><td style={td}>{fmtEUR(m.b)}</td><td style={td}>{fmtEUR(m.a)}</td><td style={{ ...td, ...colorDif(m.dif) }}>{signo(m.dif)}</td></tr>
+            ))}
+          </tbody>
+        </table>
+        <div style={{ fontSize: 12, color: theme.inkSoft, marginBottom: 6 }}>{VG_MESES[D.mesCorte - 1]}, día a día (acumulado del mes)</div>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead><tr><th style={{ ...th, textAlign: "left" }}>Día</th><th style={th}>{D.y - 1}</th><th style={th}>{D.y}</th><th style={th}>Diferencia</th></tr></thead>
+          <tbody>
+            {D.dias.map((d) => (
+              <tr key={d.dia}><td style={{ ...td, textAlign: "left" }}>{d.dia}</td><td style={td}>{fmtEUR(d.b)}</td><td style={td}>{fmtEUR(d.a)}</td><td style={{ ...td, ...colorDif(d.dif) }}>{signo(d.dif)}</td></tr>
+            ))}
+          </tbody>
+        </table>
+      </Card>
+    </>
+  );
+}
+
 function VentasGCRView({ tenantId }) {
   const [datosE, setDatosE] = useState({ gcr: null, jmcf: null }); // meses de cada entidad; null = aún sin cargar
   const [ent, setEnt] = useState("gcr"); // gcr | jmcf | ambas
@@ -6178,7 +6325,7 @@ function VentasGCRView({ tenantId }) {
       {/* ---------------- Pestañas ---------------- */}
       <div style={{ display: "flex", flexWrap: "wrap", borderBottom: `1px solid ${theme.border}`, marginBottom: 16 }}>
         {[
-          ["panel", "Panel"], ["resumen", "Resumen"], ["comparativa", "Comparativa"], ["productos", "Productos"], ["detalle", "Detalle"], ["datos", "Datos"],
+          ["panel", "Panel"], ["bonus", "Bonus"], ["resumen", "Resumen"], ["comparativa", "Comparativa"], ["productos", "Productos"], ["detalle", "Detalle"], ["datos", "Datos"],
         ].map(([id, nombre]) => (
           <button key={id} onClick={() => setTab(id)} style={tabBtn(tab === id)}>{nombre}</button>
         ))}
@@ -6194,6 +6341,7 @@ function VentasGCRView({ tenantId }) {
 
       {/* ---------------- PANEL ---------------- */}
       {hayDatos && tab === "panel" && <PanelVentas flat={flat} />}
+      {hayDatos && tab === "bonus" && <BonusVentas flat={flat} ent={ent} />}
 
       {/* ---------------- RESUMEN ---------------- */}
       {hayDatos && tab === "resumen" && (
