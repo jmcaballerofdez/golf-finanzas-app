@@ -5851,6 +5851,180 @@ function PanelVentas({ flat }) {
 }
 
 /* ---------------- Bonus por familia (20 % de lo que se supera al año anterior) ---------------- */
+// ---- Informe descargable de ventas (Excel) ----
+async function vgInformeExcel({ lineas, previas, opts, titulo, periodo, filtros, periodoPrev }) {
+  const ExcelJS = await import("exceljs");
+  const Libro = ExcelJS.Workbook || ExcelJS.default?.Workbook;
+  const wb = new Libro();
+  const cab = (ws) => { ws.getRow(ws.rowCount).font = { bold: true }; };
+  const fmt = (ws, cols) => cols.forEach((k) => { ws.getColumn(k).numFmt = "#,##0.00"; });
+  const tot = vgSumar(lineas);
+
+  // Resumen
+  const rs = wb.addWorksheet("Resumen");
+  rs.columns = [{ width: 30 }, { width: 46 }];
+  rs.addRow([titulo]).font = { bold: true, size: 14 };
+  rs.addRow([]);
+  rs.addRow(["Periodo", periodo]);
+  filtros.forEach(([k, v]) => rs.addRow([k, v]));
+  rs.addRow([]);
+  rs.addRow(["Líneas", tot.n]);
+  rs.addRow(["Unidades", vgR2(tot.c)]);
+  rs.addRow(["Base imponible (€)", vgR2(tot.b)]);
+  rs.addRow(["IVA (€)", vgR2(tot.i)]);
+  const rt = rs.addRow(["Total con IVA (€)", vgR2(tot.t)]);
+  rt.font = { bold: true };
+  rs.addRow([]);
+  rs.addRow(["Generado", new Date().toLocaleString("es-ES")]);
+  rs.getColumn(2).alignment = { horizontal: "left" };
+
+  const hojaGrupo = (nombre, modo, etqCol) => {
+    const g = vgAgrupar(lineas, modo);
+    const ws = wb.addWorksheet(nombre);
+    ws.columns = [
+      { header: etqCol, key: "k", width: 44 }, { header: "Unidades", key: "c", width: 12 },
+      { header: "Base (€)", key: "b", width: 14 }, { header: "IVA (€)", key: "i", width: 14 },
+      { header: "Total (€)", key: "t", width: 14 }, { header: "% del total", key: "p", width: 12 },
+    ];
+    ws.getRow(1).font = { bold: true };
+    g.forEach((x) => ws.addRow({ k: vgEtq(modo, x.clave), c: vgR2(x.c), b: vgR2(x.b), i: vgR2(x.i), t: vgR2(x.t), p: tot.t ? x.t / tot.t : 0 }));
+    const f = ws.addRow({ k: "TOTAL", c: vgR2(tot.c), b: vgR2(tot.b), i: vgR2(tot.i), t: vgR2(tot.t), p: 1 });
+    f.font = { bold: true };
+    fmt(ws, ["c", "b", "i", "t"]);
+    ws.getColumn("p").numFmt = "0.0%";
+    ws.views = [{ state: "frozen", ySplit: 1 }];
+  };
+  if (opts.familia) hojaGrupo("Por familia", "familia", "Familia");
+  if (opts.subfamilia) hojaGrupo("Por subfamilia", "subfamilia", "Familia · Subfamilia");
+  if (opts.producto) hojaGrupo("Por producto", "producto", "Producto");
+  if (opts.mes) hojaGrupo("Por mes", "mes", "Mes");
+  if (opts.dia) hojaGrupo("Por día", "dia", "Día");
+
+  if (opts.comparar && previas) {
+    const ws = wb.addWorksheet("Comparativa");
+    ws.columns = [{ width: 44 }, { width: 16 }, { width: 16 }, { width: 16 }, { width: 12 }];
+    ws.addRow([`Periodo actual: ${periodo}  ·  Año anterior: ${periodoPrev}`]).font = { italic: true };
+    const bloque = (titulo2, modo) => {
+      ws.addRow([]);
+      const h = ws.addRow([titulo2, "Actual (€)", "Año anterior (€)", "Diferencia (€)", "Variación %"]);
+      h.font = { bold: true };
+      vgComparar(lineas, previas, modo).forEach((x) => {
+        const r = ws.addRow([vgEtq(modo, x.clave), vgR2(x.a), vgR2(x.b), vgR2(x.dif), x.pct == null ? null : x.pct / 100]);
+        r.getCell(2).numFmt = r.getCell(3).numFmt = r.getCell(4).numFmt = "#,##0.00";
+        r.getCell(5).numFmt = "0.0%";
+      });
+    };
+    bloque("Por familia", "familia");
+    bloque("Por subfamilia", "subfamilia");
+    bloque("Por mes del año", "mesanio");
+  }
+
+  if (opts.detalle) {
+    const ws = wb.addWorksheet("Detalle");
+    ws.columns = [
+      { header: "Fecha", key: "d", width: 12 }, { header: "Familia", key: "f", width: 20 },
+      { header: "Subfamilia", key: "s", width: 26 }, { header: "Producto", key: "p", width: 40 },
+      { header: "Unidades", key: "c", width: 10 }, { header: "Base (€)", key: "b", width: 12 },
+      { header: "IVA (€)", key: "i", width: 12 }, { header: "Total (€)", key: "t", width: 12 },
+    ];
+    ws.getRow(1).font = { bold: true };
+    [...lineas].sort((a, b) => a.d.localeCompare(b.d)).forEach((l) =>
+      ws.addRow({ d: l.m ? l.d.slice(0, 7) : l.d, f: l.f, s: l.s, p: l.p, c: vgR2(l.c), b: vgR2(l.b), i: vgR2(l.i), t: vgR2(l.t) }));
+    fmt(ws, ["c", "b", "i", "t"]);
+    ws.views = [{ state: "frozen", ySplit: 1 }];
+    ws.autoFilter = { from: "A1", to: "H1" };
+  }
+
+  const buf = await wb.xlsx.writeBuffer();
+  return new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+}
+
+function InformeVentas({ filtradas, flat, desde, hasta, fFam, fSub, fProd, familias, entNombre }) {
+  const [sel, setSel] = useState([]);
+  const [opts, setOpts] = useState({ familia: true, subfamilia: true, producto: true, mes: true, dia: false, comparar: true, detalle: false });
+  const [creando, setCreando] = useState(false);
+  const [error, setError] = useState("");
+
+  const lineas = useMemo(() => filtradas.filter((l) => !sel.length || sel.includes(l.f)), [filtradas, sel]);
+  const menos1 = (d) => (d ? `${Number(d.slice(0, 4)) - 1}${d.slice(4)}` : "");
+  const previas = useMemo(
+    () => vgFiltrar(flat, { desde: menos1(desde), hasta: menos1(hasta), fFam, fSub, fProd }).filter((l) => !sel.length || sel.includes(l.f)),
+    [flat, desde, hasta, fFam, fSub, fProd, sel]
+  );
+  const tot = useMemo(() => vgSumar(lineas), [lineas]);
+  const eur = (n) => n.toLocaleString("es-ES", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " €";
+  const alguna = Object.entries(opts).some(([k, v]) => v && k !== "comparar") ;
+
+  const toggleFam = (f) => setSel((s) => (s.includes(f) ? s.filter((x) => x !== f) : [...s, f]));
+  const toggleOpt = (k) => setOpts((o) => ({ ...o, [k]: !o[k] }));
+  const chip = (activo) => ({
+    padding: "6px 12px", borderRadius: 999, fontSize: 13, fontWeight: 600, cursor: "pointer",
+    border: `1px solid ${activo ? theme.pine : theme.border}`, background: activo ? theme.pine : "#fff", color: activo ? "#fff" : theme.ink,
+  });
+  const OPCIONES = [
+    ["familia", "Por familia"], ["subfamilia", "Por subfamilia"], ["producto", "Por producto"], ["mes", "Por mes"],
+    ["dia", "Por día"], ["comparar", "Comparar con el año anterior"], ["detalle", "Todas las líneas (detalle)"],
+  ];
+
+  const descargar = async () => {
+    setCreando(true); setError("");
+    try {
+      const filtros = [
+        ["Entidad", entNombre],
+        ["Familias", sel.length ? sel.join(", ") : fFam || "Todas"],
+        ["Subfamilia", fSub || "Todas"],
+        ["Producto contiene", fProd || "—"],
+      ];
+      const blob = await vgInformeExcel({
+        lineas, previas, opts, titulo: `Informe de ventas · ${entNombre}`,
+        periodo: `${desde || "inicio"} a ${hasta || "fin"}`, periodoPrev: `${menos1(desde) || "inicio"} a ${menos1(hasta) || "fin"}`, filtros,
+      });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `Ventas_${(sel.length ? sel.join("-") : fFam || "todas").replace(/[^\w-]+/g, "_")}_${desde || "ini"}_${hasta || "fin"}.xlsx`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    } catch (e) {
+      setError("No se ha podido crear el Excel: " + (e?.message || e));
+    }
+    setCreando(false);
+  };
+
+  return (
+    <Card>
+      <div style={{ fontWeight: 700, color: theme.ink, marginBottom: 4 }}>Informe en Excel</div>
+      <div style={{ fontSize: 13, color: theme.inkSoft, marginBottom: 14 }}>
+        Usa las fechas, familia, subfamilia y producto de arriba. Aquí puedes elegir varias familias y qué hojas quieres.
+      </div>
+
+      <div style={{ fontSize: 12, fontWeight: 600, color: theme.inkSoft, marginBottom: 6 }}>Familias (varias a la vez; sin marcar = todas)</div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
+        {familias.map((f) => <button key={f} onClick={() => toggleFam(f)} style={chip(sel.includes(f))}>{f}</button>)}
+      </div>
+
+      <div style={{ fontSize: 12, fontWeight: 600, color: theme.inkSoft, marginBottom: 6 }}>Hojas del informe</div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
+        {OPCIONES.map(([k, n]) => <button key={k} onClick={() => toggleOpt(k)} style={chip(opts[k])}>{n}</button>)}
+      </div>
+
+      <div style={{ background: theme.bg || "#f7f5ef", borderRadius: 10, padding: "10px 14px", fontSize: 14, color: theme.ink, marginBottom: 14 }}>
+        <b>{desde || "inicio"} → {hasta || "fin"}</b> · {lineas.length.toLocaleString("es-ES")} líneas · Total con IVA <b>{eur(tot.t)}</b>
+        {opts.comparar && <span style={{ color: theme.inkSoft }}> · año anterior: {eur(vgSumar(previas).t)}</span>}
+      </div>
+
+      <button onClick={descargar} disabled={!lineas.length || !alguna || creando}
+        style={{ padding: "10px 18px", borderRadius: 10, border: "none", fontWeight: 600, fontSize: 14,
+          background: lineas.length && alguna && !creando ? theme.pine : theme.border,
+          color: lineas.length && alguna && !creando ? "#fff" : theme.inkSoft,
+          cursor: lineas.length && alguna && !creando ? "pointer" : "not-allowed" }}>
+        {creando ? "Creando Excel…" : "Descargar Excel"}
+      </button>
+      {!lineas.length && <div style={{ fontSize: 13, color: theme.inkSoft, marginTop: 8 }}>No hay ventas con estos filtros.</div>}
+      {error && <div style={{ fontSize: 13, color: "#b00020", marginTop: 8 }}>{error}</div>}
+    </Card>
+  );
+}
+
 const BONUS_PORC = 0.2;
 const BONUS_FAMILIAS = [
   ["Cuotas sociales", (l) => vgNorm(l.s).trim() === "cuota mensual social"],
@@ -6326,7 +6500,7 @@ function VentasGCRView({ tenantId }) {
       {/* ---------------- Pestañas ---------------- */}
       <div style={{ display: "flex", flexWrap: "wrap", borderBottom: `1px solid ${theme.border}`, marginBottom: 16 }}>
         {[
-          ["panel", "Panel"], ["bonus", "Bonus"], ["resumen", "Resumen"], ["comparativa", "Comparativa"], ["productos", "Productos"], ["detalle", "Detalle"], ["datos", "Datos"],
+          ["panel", "Panel"], ["bonus", "Bonus"], ["informe", "Informe"], ["resumen", "Resumen"], ["comparativa", "Comparativa"], ["productos", "Productos"], ["detalle", "Detalle"], ["datos", "Datos"],
         ].map(([id, nombre]) => (
           <button key={id} onClick={() => setTab(id)} style={tabBtn(tab === id)}>{nombre}</button>
         ))}
@@ -6343,6 +6517,9 @@ function VentasGCRView({ tenantId }) {
       {/* ---------------- PANEL ---------------- */}
       {hayDatos && tab === "panel" && <PanelVentas flat={flat} />}
       {hayDatos && tab === "bonus" && <BonusVentas flat={flat} ent={ent} />}
+      {hayDatos && tab === "informe" && (
+        <InformeVentas filtradas={filtradas} flat={flat} desde={desde} hasta={hasta} fFam={fFam} fSub={fSub} fProd={fProd} familias={familias} entNombre={ent === "ambas" ? "Ambas entidades" : VG_ENTS[ent].nombre} />
+      )}
 
       {/* ---------------- RESUMEN ---------------- */}
       {hayDatos && tab === "resumen" && (
